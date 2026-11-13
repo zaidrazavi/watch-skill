@@ -36,8 +36,12 @@ def compute_pacing(
         "hook_cuts": None,
         "fastest_cut_gap_s": None,
         "pace_label": None,
+        "note": None,
     }
-    if not candidate_timestamps or engine not in ("scene", "keyframe"):
+    # Report pacing from any engine that handed us cut timestamps — including the
+    # uniform fallback, which still carries the few scene cuts it detected before
+    # falling back. A low-cut clip yields a valid "slow/static" pace, never "N/A".
+    if not candidate_timestamps or engine not in ("scene", "keyframe", "uniform"):
         return result
 
     ts = sorted(t for t in candidate_timestamps if t is not None)
@@ -66,6 +70,12 @@ def compute_pacing(
         else:
             pace_label = "slow / static"
 
+    note = None
+    if engine == "keyframe":
+        note = "cuts approximated from keyframes"
+    elif engine == "uniform":
+        note = "few hard cuts — continuous/slideshow-style footage"
+
     result.update({
         "available": True,
         "cuts": cuts,
@@ -75,6 +85,7 @@ def compute_pacing(
         "hook_cuts": hook_cuts,
         "fastest_cut_gap_s": fastest_gap,
         "pace_label": pace_label,
+        "note": note,
     })
     return result
 
@@ -91,6 +102,8 @@ def format_pacing_report(p: dict) -> str:
     ]
     if p.get("fastest_cut_gap_s") is not None:
         lines.append(f"- **Fastest cut:** {p['fastest_cut_gap_s']}s between shots")
+    if p.get("note"):
+        lines.append(f"- _Note: {p['note']}._")
     return "\n".join(lines)
 
 

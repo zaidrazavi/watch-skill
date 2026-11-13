@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "0.5.0"
+version: "0.5.1"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or fully local faster-whisper transcription — no API key, no cost, with a largest→smallest model fallback), reads burned-in on-screen text with local OCR, profiles the audio (loudness, silence, speech/music mix), separates vocals from music and transcribes sung lyrics with local Demucs, builds a speech/music/singing/silence timeline, measures cut pacing, labels the opening 3-second ad hook, compares multiple videos side by side, and hands the result to Claude so it can answer questions about what's in the video. Everything runs locally and free.
 argument-hint: "<video-url-or-path> [more-urls…] [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -311,7 +311,7 @@ On by default whenever audio is analyzed (the no-stems version is cheap — just
 
 ## Pacing / cut metrics
 
-The `## Pacing` section turns the scene detector's cut timestamps into numbers: total cuts, cuts/sec (with a `very fast | fast | moderate | slow` label), average shot length, the number of cuts inside the hook window, and the fastest cut gap. Only the scene (`balanced` / `token-burner`) and keyframe (`efficient`) engines produce cut data; the uniform fallback on a static screen recording reports pacing as unavailable. Use it to characterize edit rhythm — frenetic hook cutting is a deliberate retention tactic worth naming.
+The `## Pacing` section turns the scene detector's cut timestamps into numbers: total cuts, cuts/sec (with a `very fast | fast | moderate | slow` label), average shot length, the number of cuts inside the hook window, and the fastest cut gap. It is available in every frame-producing mode — scene (`balanced`/`token-burner`), keyframe (`efficient`), **and the uniform fallback**: a low-cut clip (a continuous AI-image slideshow, a static talking head, a screen recording) keeps the few cuts it did detect and reports them as a valid "slow / static" pace with a note, rather than "unavailable". Only `--detail transcript` (no frames at all) has no pacing. Use it to characterize edit rhythm — frenetic hook cutting is a deliberate retention tactic worth naming, and a slow slideshow pace is itself a finding.
 
 ## Comparing multiple videos
 

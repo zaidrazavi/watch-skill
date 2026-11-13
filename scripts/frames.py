@@ -571,6 +571,10 @@ def extract_scene_or_uniform(
     return frames, {
         "engine": "uniform",
         "candidate_count": scene_count,
+        # Keep the few scene cuts we DID detect (timestamps only; the JPEGs were
+        # replaced by the uniform pass) so pacing stays available even on a
+        # low-cut clip — a few cuts is a valid "slow/static" pacing, not "N/A".
+        "candidate_timestamps": candidate_timestamps,
         "deduped_count": n_dropped,
         "selected_count": len(frames),
         "fallback": True,
@@ -639,6 +643,7 @@ def extract_keyframes(
 
     # Too few keyframes → uniform fallback over the same range.
     if len(candidates) < KEYFRAME_MIN:
+        fallback_candidate_ts = [c["timestamp_seconds"] for c in candidates]
         for cand in candidates:
             try:
                 Path(cand["path"]).unlink()
@@ -666,6 +671,7 @@ def extract_keyframes(
         return frames_out, {
             "engine": "uniform",
             "candidate_count": len(candidates),
+            "candidate_timestamps": fallback_candidate_ts,
             "deduped_count": n_dropped,
             "selected_count": len(frames_out),
             "fallback": True,
