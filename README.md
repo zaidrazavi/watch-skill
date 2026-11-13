@@ -12,11 +12,15 @@ Built for ad research: it labels each ad's **opening 3-second hook** with word-l
 - **Audio intelligence:** integrated loudness (LUFS), silence gaps, a speech / music / silence content mix, and whether the hook is voice-led or music/sfx and how much louder it is than the rest.
 - **Pacing / cut metrics:** total cuts, cuts per second with a pace label, average shot length, and the number of cuts inside the hook window.
 - **Ad hook:** labels the first 3 seconds with word-level timestamps, hook on-screen text, hook audio, and hook cut count.
+- **Stem separation (opt-in):** `--stems` splits the audio into isolated **vocals** and **music** tracks with Demucs (local).
+- **Lyric / vocal transcription (opt-in):** `--lyrics` transcribes the isolated vocal stem, so sung lyrics or a voice buried under a loud bed come through far better.
+- **Speech / music / singing / silence timeline:** labels every second; with stems it distinguishes speech from singing from pure music.
+- **Music identification (opt-in, the one external step):** `--identify` names the track Shazam-style (via `shazamio`) — use it only for "what song is this?" questions.
 - **Multi-video compare:** pass several URLs/paths at once for a side-by-side hook comparison table.
 - **Structured JSON:** `--json` / `--report-json` emit the whole analysis as JSON for another tool or skill to consume.
 - **Detail levels:** `transcript`, `efficient`, `balanced` and `token-burner` trade speed against detail.
 
-Everything runs **locally and free** — no API key, and nothing (video, audio, or frames) ever leaves your machine.
+Everything runs **locally and free** — no API key, and nothing (video, audio, or frames) leaves your machine. The **one** exception is `--identify`, which is opt-in and sends a short audio fingerprint to Shazam only when you explicitly ask it to name a track.
 
 ## Local transcription with model fallback
 
@@ -29,13 +33,15 @@ This is a reworked version of an open-source skill (credited below). My changes:
 - **Removed the paid cloud transcription** (Groq / OpenAI Whisper APIs) and replaced it with local, open-source **faster-whisper** — no API key, no usage cost, audio never leaves your machine.
 - **Added a largest-to-smallest model fallback cascade** so transcription always uses the best model the hardware can run.
 - **Added on-screen text OCR, audio intelligence, and cut/pacing metrics** — the three evidence streams ad research needs beyond frames and speech.
+- **Added local stem separation (Demucs), sung-lyric transcription, and a speech/music/singing timeline.**
+- **Added opt-in Shazam-style track identification** (`--identify`) — the only non-local feature, off unless explicitly requested.
 - **Added multi-video compare and structured JSON output.**
 - **Improved timestamp precision** for ad-hook analysis, with word-level timing on the opening hook.
 - **Removed the API-key setup prompts.** First run auto-downloads and caches the models, then works offline.
 
 ## Tech
 
-Python · FFmpeg · yt-dlp · faster-whisper · RapidOCR
+Python · FFmpeg · yt-dlp · faster-whisper · RapidOCR · Demucs · shazamio (opt-in)
 
 ## Setup
 

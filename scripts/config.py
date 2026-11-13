@@ -19,6 +19,10 @@ DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
 TOGGLES = {"auto", "on", "off"}
 DEFAULT_OCR = "auto"
 DEFAULT_AUDIO = "auto"
+# Stem separation is heavy (Demucs + torch), so it stays OFF unless explicitly
+# turned on with --stems/--lyrics or WATCH_STEMS=on.
+STEMS_TOGGLES = {"on", "off"}
+DEFAULT_STEMS = "off"
 
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:
@@ -70,10 +74,15 @@ def get_config() -> dict[str, object]:
     if audio not in TOGGLES:
         audio = DEFAULT_AUDIO
 
+    stems = (os.environ.get("WATCH_STEMS") or file_values.get("WATCH_STEMS") or DEFAULT_STEMS).lower()
+    if stems not in STEMS_TOGGLES:
+        stems = DEFAULT_STEMS
+
     return {
         "detail": detail,
         "ocr": ocr,
         "audio": audio,
+        "stems": stems,
         "config_file": str(CONFIG_FILE),
     }
 

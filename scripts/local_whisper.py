@@ -180,12 +180,17 @@ def transcribe_video(
     video_path: str,
     audio_out: Path,
     model_size: str | None = None,
+    vad_filter: bool = True,
 ) -> tuple[list[dict], str]:
     """Run the full flow: extract audio → local Whisper → parse segments.
 
     Returns (segments, backend_label). Each segment is
     {start, end, text, words} where `words` is a list of
     {word, start, end} for word-level timing. Raises SystemExit on failure.
+
+    ``vad_filter`` skips silence (default, best for speech). Pass ``False`` when
+    transcribing an isolated **vocals stem for sung lyrics**, where VAD can clip
+    the sustained, pause-light phrasing of singing.
     """
     try:
         from faster_whisper import WhisperModel
@@ -227,7 +232,7 @@ def transcribe_video(
         model = WhisperModel(model_name, device=dev, compute_type=ctype)
         segments_iter, run_info = model.transcribe(
             str(audio_path.resolve()),
-            vad_filter=True,        # skip silence: faster + no hallucinated text in gaps
+            vad_filter=vad_filter,  # skip silence for speech; off for sung-lyric stems
             word_timestamps=True,   # word-level timing for precise ad-hook analysis
             # language auto-detected (not hardcoded to English)
         )

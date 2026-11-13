@@ -1,7 +1,7 @@
 ---
 name: watch
-version: "0.4.0"
-description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or fully local faster-whisper transcription — no API key, no cost), reads burned-in on-screen text with local OCR, profiles the audio (loudness, silence, speech/music mix), measures cut pacing, labels the opening 3-second ad hook, compares multiple videos side by side, and hands the result to Claude so it can answer questions about what's in the video. Everything runs locally and free.
+version: "0.5.0"
+description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or fully local faster-whisper transcription — no API key, no cost, with a largest→smallest model fallback), reads burned-in on-screen text with local OCR, profiles the audio (loudness, silence, speech/music mix), separates vocals from music and transcribes sung lyrics with local Demucs, builds a speech/music/singing/silence timeline, measures cut pacing, labels the opening 3-second ad hook, compares multiple videos side by side, and hands the result to Claude so it can answer questions about what's in the video. Everything runs locally and free.
 argument-hint: "<video-url-or-path> [more-urls…] [question]"
 allowed-tools: Bash, Read, AskUserQuestion
 homepage: https://github.com/bradautomates/claude-video
@@ -20,6 +20,13 @@ You don't have a video input; this skill gives you one. A Python script gets cap
 - **Audio intelligence.** A `## Audio` section reports integrated loudness (LUFS), silence gaps, a speech / music-sfx / silence content mix, and — most important for ads — whether the hook is speech-led or music/sfx and how much louder it is than the rest.
 - **Pacing / cut metrics.** A `## Pacing` section reports total cuts, cuts/sec (with a pace label), average shot length, the number of cuts inside the hook window, and the fastest cut.
 - **Multi-video compare + JSON.** Pass more than one source to get a side-by-side hook comparison table. Pass `--json` (or `--report-json PATH`) to get the whole analysis as structured JSON instead of markdown.
+
+**New in 0.5 — audio separation & timeline (opt-in, still local and free):**
+- **Stem separation.** `--stems` splits the audio into an isolated **vocals** track and a **music** (no-vocals) track with Demucs. Uses this to sharpen the timeline and to transcribe lyrics.
+- **Lyric / vocal transcription.** `--lyrics` (implies `--stems`) transcribes the isolated vocal stem — sung lyrics or a voice buried under a loud bed come through far better than from the raw mix. A `## Lyrics / vocals` section is added.
+- **Speech / music / singing / silence timeline.** A `## Timeline` section labels every second. With stems it distinguishes speech from singing from pure music; without stems it falls back to a coarse speech / music-or-sfx / silence split. On by default (cheap); disable with `--no-timeline`.
+- **Model fallback cascade.** Transcription starts at the best Whisper model and steps down (`large-v3 → medium → small → base → tiny`) if a model can't load/run, GPU-then-CPU per model.
+- **Heads-up:** `--stems`/`--lyrics` need Demucs (`pip install demucs`, pulls torch) and a one-time model download — heavy and slow on CPU, fast on GPU. **Song *identification* (naming a track, Shazam-style) is NOT included** — it requires an external catalog service, which would break the "nothing leaves the machine" guarantee.
 
 ## Resolve `SKILL_DIR` (do this before any command)
 
@@ -101,7 +108,7 @@ WATCH_DETAIL=balanced
 
 Use the user's selected value. If they skip the question, keep the recommended default. Once dependencies, the API-key choice, and this preference are handled, write or update `SETUP_COMPLETE=true` in the same file. Do not ask this preference question again when `SETUP_COMPLETE=true`.
 
-**Structured mode (optional):** `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, missing_packages, missing_optional_packages, has_faster_whisper, has_ocr, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install`. `can_proceed` is the operational gate (all binaries present AND faster-whisper importable). `has_ocr` reports whether the optional on-screen-text OCR engine is installed — it is **not** part of `can_proceed`, since /watch runs fine without it. Branch on `can_proceed`/`first_run` to decide whether to run and whether to walk first-run setup.
+**Structured mode (optional):** `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, missing_packages, missing_optional_packages, missing_heavy_packages, has_faster_whisper, has_ocr, has_identify, has_stems, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install`. `can_proceed` is the operational gate (all binaries present AND faster-whisper importable). `has_ocr`, `has_identify`, and `has_stems` report whether the optional OCR engine, the opt-in Shazam identifier, and the optional (heavy) Demucs stem-separation engine are installed — none is part of `can_proceed`, since /watch runs fine without them. Branch on `can_proceed`/`first_run` to decide whether to run and whether to walk first-run setup.
 
 **Whisper model quality (optional):** the local model size is set by `WHISPER_MODEL` in `~/.config/watch/.env` (`tiny | base | small | medium | large-v3`). It defaults to `medium` on CPU / `large-v3` on GPU, which is a good balance for ad research — you do **not** need to ask the user about it during setup. If a teammate wants faster (lower accuracy) or maximum accuracy, they can set `WHISPER_MODEL=` themselves, or you can pass `--whisper-model` for a single run.
 
@@ -156,6 +163,10 @@ Optional flags:
 - `--ocr-min-conf C` — minimum OCR confidence to keep a line (default `0.5`). Raise it to drop noisy low-confidence reads.
 - `--ocr-max-frames N` — cap how many frames get OCR'd (default `60`). OCR is the slowest optional pass on long videos; lower this to speed it up (hook frames still get priority).
 - `--audio` / `--no-audio` — force or skip the audio intelligence pass. Default is **auto**: on when the media has an audio track. Only runs when video/audio is actually downloaded (so `--detail transcript` served from captions, which downloads no media, has no audio profile).
+- `--stems` / `--no-stems` — separate audio into vocals + music tracks with Demucs (local). **Off by default** (heavy: needs `pip install demucs`, pulls torch, one-time model download; slow on CPU). Sharpens the timeline and enables lyric transcription. Pin with `WATCH_STEMS=on`.
+- `--lyrics` — transcribe the isolated vocal stem for sung lyrics (**implies `--stems`**). Adds a `## Lyrics / vocals` section. Best for music-led content where the normal transcript comes back empty or music-garbled.
+- `--no-timeline` — skip the speech/music/singing/silence timeline (it's on by default whenever audio is analyzed).
+- `--identify` — identify the music/track (Shazam-style). **Opt-in and the only non-local step:** it sends a short audio fingerprint to an external service, so use it **only when the user's question is about the music or the sound** (e.g. "what song is this?", "what's the audio?", "is this a trending sound?"). Prefers the isolated music stem when `--stems` is also set (much better match rate — a voiceover over the song confuses the raw mix).
 - `--json` — emit the whole analysis as structured JSON to stdout **instead of** the markdown report (use when another tool/skill will consume it).
 - `--report-json PATH` — also write the structured JSON to a file while still printing the markdown report.
 
@@ -239,7 +250,7 @@ The script gets a timestamped transcript in one of two ways:
    - **Zero cost, zero API key, nothing leaves the machine.** The audio is never uploaded anywhere.
    - **Auto hardware detection.** Uses a CUDA GPU (`float16`) when present, otherwise quantized CPU inference (`int8`) which keeps it fast.
    - **One-time model download.** On first use the model auto-downloads to `~/.cache/huggingface` (~1.5 GB for the default `medium`) and is cached forever — every run after that is fully offline. A one-line "[watch] downloading … one-time only" notice prints to stderr so the delay isn't confusing.
-   - **Model size is configurable** via `WHISPER_MODEL` in `~/.config/watch/.env` (`tiny | base | small | medium | large-v3`), defaulting to `medium` on CPU and `large-v3` on GPU. Override per-run with `--whisper-model`.
+   - **Model size is configurable** via `WHISPER_MODEL` in `~/.config/watch/.env` (`tiny | base | small | medium | large-v3`). By default transcription **starts at the best model (`large-v3`) and cascades down** — `large-v3 → medium → small → base → tiny` — if a model can't load or run (out-of-memory, failed weight download, missing CUDA runtime), trying the GPU then CPU for each. Strong machines get maximum accuracy; weak ones still succeed on a smaller fallback. `WHISPER_MODEL=` pins the starting point; `--whisper-model` overrides per run.
    - **VAD-filtered + word-level timestamps.** Silence is skipped (faster, and avoids hallucinated text in silent gaps), and word-level timing is captured — which powers the `## HOOK` section (see below). Language is auto-detected.
 
 Use `--no-whisper` to skip local transcription entirely (frames-only if no captions).
@@ -266,6 +277,37 @@ The `## Audio` section profiles the audio track with ffmpeg only (no extra depen
 - **Integrated loudness** (LUFS) and true peak, plus total silence and gap count.
 
 Default auto (on when the media has an audio track). Disable with `--no-audio` or `WATCH_AUDIO=off`. Note it needs the actual media, so `--detail transcript` served purely from captions (no download) produces no audio profile.
+
+## Stem separation & lyric transcription
+
+`--stems` runs [Demucs](https://github.com/adefossez/demucs) locally to split the audio into an isolated **vocals** track and a **music** (no-vocals) track. This is the one **heavy** optional feature — Demucs pulls in PyTorch, downloads a model on first use, and is slow on CPU (fast on a GPU). Install it with `pip install demucs`; it is **not** auto-installed by setup. `setup.py --json` reports `has_stems`.
+
+`--lyrics` (which implies `--stems`) then transcribes the **isolated vocal stem** instead of the raw mix, with VAD off so sustained singing isn't clipped. Sung lyrics, or a voiceover buried under a loud music bed, come through far better this way. The result is added as a `## Lyrics / vocals` section; treat sung-lyric text as approximate (Whisper is a speech model). For ad research with a spoken VO over music, `--lyrics` is also the way to recover the VO when the normal mix transcript is garbled.
+
+What stems do **not** do: they don't *name* the song — that's what `--identify` is for (see below). Stems isolate and transcribe the audio; identification is a separate, external step.
+
+## Music / track identification (`--identify`) — opt-in, the one external step
+
+`--identify` names the music playing in the clip, Shazam-style, via [`shazamio`](https://github.com/shazamio/ShazamIO) (unofficial Shazam client, no API key). **This is the only part of /watch that is not local:** it sends a short audio fingerprint to Shazam's service. So it is strictly opt-in and runs **only** with the `--identify` flag.
+
+**When to use it:** only when the user's question is about the audio itself — "what song is this?", "what's the music / sound?", "is this a trending audio?", "name the track". Do **not** add `--identify` to ordinary visual/transcript/ad-hook questions; keep those fully local.
+
+**Behavior and limits:**
+- It identifies **music** (commercial/catalogued songs). It does **not** name arbitrary sound effects, original scores, or unreleased audio — those return "no catalogued music matched", which is itself a useful answer (it's not a known song).
+- It matches far better on a clean music track, so when `--stems` is also set it runs on the **isolated music stem** (voiceover removed) rather than the raw mix. For a voice-over-music ad, `--identify` alone (no stems) often returns no match while `--identify --stems` matches — prefer combining them when the audio has prominent speech.
+- The result is a `## Music / track ID` section (title, artist, album, genre, label, Shazam link) and an `identify` object in the JSON.
+- Requires `pip install shazamio` (the installer adds it best-effort; `setup.py --json` reports `has_identify`). Fail-open: if it's missing or the lookup fails, the section says so and nothing else is affected.
+
+There is no fully-local song-naming option (naming a track requires an external catalog); if the user needs 100% offline, the local answer is the stems + timeline + lyric transcript, not a track name.
+
+## Speech / music / singing / silence timeline
+
+A `## Timeline` section labels every second of the clip and merges runs into segments, e.g. `[00:00–00:05] music` → `[00:05–00:19] speech`. It has two fidelities:
+
+- **With stems** (`--stems`/`--lyrics`): it compares the per-second energy of the vocals vs music stems and cross-references the speech transcript, so it tells **speech** (a voice with recognized words) from **singing** (vocal energy over a music bed) from **music** (backing track, no vocal) from **sfx** and **silence**.
+- **Without stems** (default): a coarser **speech / music-or-sfx / silence** split from the mix energy plus transcript word coverage.
+
+On by default whenever audio is analyzed (the no-stems version is cheap — just a couple of ffmpeg passes). Disable with `--no-timeline`. Use it to answer "where does the voiceover start?", "how much of this is music?", or "is the hook carried by a beat or a voice?".
 
 ## Pacing / cut metrics
 
@@ -297,6 +339,10 @@ For piping into another tool or skill, `--json` emits the entire analysis (hook,
 - **OCR unavailable** → the report simply omits `on-screen:` text and the `On-screen text` header line. To enable it, `pip install rapidocr-onnxruntime` (or re-run `python3 "${SKILL_DIR}/scripts/setup.py"`, which adds it best-effort). Proceed with frames + transcript; you can still read large overlay text off the frames yourself.
 - **On-screen text looks garbled / partial** → OCR on 512px frames struggles with small or stylized type. Re-run with `--resolution 1024` (and optionally `--ocr-min-conf 0.6`) for a cleaner read, or just read the frame image directly.
 - **No audio profile** → the clip has no audio track, `--no-audio` was passed, or `--detail transcript` served from captions downloaded no media. The `## Audio` section says so; proceed without it.
+- **`--stems`/`--lyrics` but Demucs not installed** → a stderr hint prints and the run proceeds without stems (the timeline falls back to its coarse mode, no `## Lyrics` section). Install with `pip install demucs` (pulls torch; large).
+- **Stem separation is slow** → Demucs on CPU is minutes-slow for longer clips and downloads a model on first use. It's fast on a GPU. For a long video, focus on a section with `--start`/`--end` before running `--lyrics`, or skip stems.
+- **Sung lyrics look wrong** → Whisper is a speech model; sung-lyric transcription from the vocal stem is approximate, especially for stylized/heavy music. Treat the `## Lyrics` text as a best-effort guide, not ground truth.
+- **"What song is this?" / "what's the sound?"** → this is exactly when to add `--identify` (Shazam-style). It's the one external step (sends an audio fingerprint off-machine), so only use it for audio-identification questions. Combine with `--stems` for a much better match on voice-over-music clips. A "no match" means it's not a catalogued song (original audio or an SFX).
 
 ## Token efficiency
 
@@ -315,16 +361,18 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Transcribes that audio clip **fully locally** with faster-whisper — the audio never leaves the machine and no API key is involved
 - Runs **on-screen text OCR fully locally** with RapidOCR (onnxruntime) over the extracted frames — the images never leave the machine, no API key
 - Profiles the audio with ffmpeg filters only (loudness/silence/RMS) — no extra service, nothing uploaded
+- When `--stems`/`--lyrics` is used, separates vocals from music **fully locally** with Demucs (downloads the Demucs model once from its open release, then runs offline); the audio never leaves the machine
+- **Only when `--identify` is explicitly passed**, sends a short audio fingerprint to Shazam (via `shazamio`) to name the track — this is the **single** step that transmits audio off-machine, it is opt-in, uses no account or API key, and is never triggered automatically. Every other feature stays fully local
 - On the first transcription only, downloads the Whisper model weights from Hugging Face (`huggingface.co`) into `~/.cache/huggingface`; cached and fully offline thereafter. The first OCR run similarly fetches RapidOCR's small bundled ONNX models once (shipped with the pip package), then runs offline
 - Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
 - Reads / creates `~/.config/watch/.env` (mode `0600`) to store watch preferences (`WATCH_DETAIL`, optional `WHISPER_MODEL`) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
 
 **What this skill does NOT do:**
-- Does not upload the video, the audio, or the frames to any API — all transcription, OCR, and audio analysis run locally on this machine
-- Does not require, store, or transmit any API key — there is none
+- Does not upload the video, the audio, or the frames to any API by default — all transcription, OCR, stem separation, and audio analysis run locally on this machine. The **one** exception is `--identify`, which (only when explicitly passed) sends a short audio fingerprint to Shazam to name a track
+- Does not require, store, or transmit any API key — there is none (Shazam identification via `shazamio` uses no key)
 - Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
 - Does not persist anything outside the working directory, `~/.config/watch/.env`, and the one-time Hugging Face model cache — clean up the working directory when you're done (Step 5)
 
-**Bundled scripts:** `scripts/watch.py` (entry point / orchestration / rendering), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction + scene/keyframe/dedup), `scripts/transcribe.py` (caption parsing + transcript formatting), `scripts/local_whisper.py` (fully local faster-whisper transcription), `scripts/ocr.py` (local on-screen text OCR), `scripts/audio.py` (ffmpeg audio intelligence), `scripts/metrics.py` (cut/pacing metrics), `scripts/config.py` (shared config), `scripts/setup.py` (preflight + installer)
+**Bundled scripts:** `scripts/watch.py` (entry point / orchestration / rendering), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction + scene/keyframe/dedup), `scripts/transcribe.py` (caption parsing + transcript formatting), `scripts/local_whisper.py` (fully local faster-whisper transcription with model cascade), `scripts/ocr.py` (local on-screen text OCR), `scripts/audio.py` (ffmpeg audio intelligence), `scripts/stems.py` (local Demucs vocal/music separation), `scripts/timeline.py` (speech/music/singing timeline), `scripts/identify.py` (opt-in Shazam track identification — the only non-local script), `scripts/metrics.py` (cut/pacing metrics), `scripts/config.py` (shared config), `scripts/setup.py` (preflight + installer)
 
 Review scripts before first use to verify behavior.

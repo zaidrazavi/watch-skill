@@ -35,7 +35,10 @@ from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from local_whisper import extract_audio, transcribe_video  # noqa: E402
 from metrics import compute_pacing, format_pacing_report  # noqa: E402
 from audio import analyze_audio, format_audio_report  # noqa: E402
+from timeline import build_timeline, format_timeline  # noqa: E402
+from identify import identify_track, format_identify_report  # noqa: E402
 import ocr as ocr_mod  # noqa: E402
+import stems as stems_mod  # noqa: E402
 
 
 HOOK_SECONDS = 3.0
@@ -98,6 +101,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
                            help="Force audio intelligence analysis.")
     audio_grp.add_argument("--no-audio", dest="audio", action="store_false",
                            help="Skip audio intelligence analysis.")
+    stems_grp = ap.add_mutually_exclusive_group()
+    stems_grp.add_argument("--stems", dest="stems", action="store_true", default=None,
+                           help="Separate audio into vocals/music stems (Demucs, local). "
+                                "Heavy: needs torch + a model download. Sharpens the timeline.")
+    stems_grp.add_argument("--no-stems", dest="stems", action="store_false",
+                           help="Skip stem separation.")
+    ap.add_argument("--lyrics", dest="lyrics", action="store_true",
+                    help="Transcribe the isolated vocal stem for sung lyrics (implies --stems).")
+    ap.add_argument("--no-timeline", dest="timeline", action="store_false", default=True,
+                    help="Skip the speech/music/singing timeline.")
+    ap.add_argument("--identify", dest="identify", action="store_true",
+                    help="Identify the music/track (Shazam-style, via shazamio). OPT-IN: "
+                         "this sends a short audio fingerprint to an external service, so it "
+                         "runs ONLY with this flag — use it when the question is about the "
+                         "music or sound. Uses the isolated music stem when stems are available.")
     ap.add_argument("--report-json", type=str, default=None,
                     help="Write the structured report as JSON to this path (markdown still prints).")
     ap.add_argument("--json", dest="json_stdout", action="store_true",
@@ -278,30 +296,82 @@ def build_report(source: str, args, config: dict, index: int = 0) -> dict:
             fr.setdefault("ocr_text", "")
             fr.setdefault("ocr_lines", [])
 
-    # --- Audio intelligence ---------------------------------------------------
+    # --- Audio: analysis, stem separation, lyrics, timeline -------------------
+    have_media_audio = bool(video_path) and meta.get("has_audio", False)
     audio_wanted = args.audio
     if audio_wanted is None:
         audio_pref = str(config.get("audio", "auto"))
-        if audio_pref == "off":
-            audio_wanted = False
-        else:  # "on" or "auto" both need media with an audio track to do anything
-            audio_wanted = bool(video_path) and meta.get("has_audio", False)
+        audio_wanted = False if audio_pref == "off" else have_media_audio
+
+    # Stems are opt-in (heavy): --stems, --lyrics, or WATCH_STEMS=on.
+    stems_wanted = args.stems
+    if stems_wanted is None:
+        stems_wanted = str(config.get("stems", "off")) == "on"
+    if args.lyrics:
+        stems_wanted = True
+
+    audio_dur = effective_duration if focused else full_duration
     audio_result = {"available": False}
-    if audio_wanted and video_path and meta.get("has_audio"):
-        audio_src = work / "audio.mp3"
-        if not audio_src.exists():
+    stem_result = None
+    lyrics_segments: list[dict] = []
+    lyrics_source: str | None = None
+    timeline_result: dict = {"available": False}
+
+    # Ensure a single shared audio clip for every audio consumer.
+    audio_src = None
+    if have_media_audio and (audio_wanted or stems_wanted or args.timeline):
+        candidate = work / "audio.mp3"
+        if not candidate.exists():
             try:
-                extract_audio(video_path, audio_src)
+                extract_audio(video_path, candidate)
             except SystemExit as exc:
-                print(f"[watch] audio extraction for analysis failed: {exc}", file=sys.stderr)
-                audio_src = None
-        if audio_src and Path(audio_src).exists():
-            print("[watch] analyzing audio (loudness / silence / content mix)…", file=sys.stderr)
-            audio_result = analyze_audio(
-                str(audio_src), effective_duration if focused else full_duration,
-                transcript_segments=transcript_segments,
-                hook_start=effective_start,
+                print(f"[watch] audio extraction failed: {exc}", file=sys.stderr)
+                candidate = None
+        audio_src = candidate if candidate and Path(candidate).exists() else None
+
+    if audio_wanted and audio_src:
+        print("[watch] analyzing audio (loudness / silence / content mix)…", file=sys.stderr)
+        audio_result = analyze_audio(
+            str(audio_src), audio_dur,
+            transcript_segments=transcript_segments, hook_start=effective_start,
+        )
+
+    if stems_wanted and audio_src:
+        if not stems_mod.stems_available():
+            print("[watch] stem separation requested but Demucs is not installed — "
+                  "`pip install demucs` to enable (vocals/music split + lyrics).", file=sys.stderr)
+        else:
+            stem_result = stems_mod.separate(str(audio_src), work / "stems")
+
+    if args.lyrics and stem_result and stem_result.get("vocals"):
+        try:
+            print("[watch] transcribing isolated vocal stem for lyrics…", file=sys.stderr)
+            lyrics_segments, lyrics_backend = transcribe_video(
+                stem_result["vocals"], work / "vocals_16k.mp3",
+                model_size=args.whisper_model, vad_filter=False,
             )
+            if focused:
+                lyrics_segments = filter_range(lyrics_segments, start_sec, end_sec)
+            lyrics_source = f"{lyrics_backend} (vocals stem)"
+        except SystemExit as exc:
+            print(f"[watch] lyric transcription failed: {exc}", file=sys.stderr)
+
+    if args.timeline and audio_src:
+        print("[watch] building speech/music/singing timeline…", file=sys.stderr)
+        timeline_result = build_timeline(
+            str(audio_src), audio_dur, transcript_segments=transcript_segments,
+            vocals_path=stem_result.get("vocals") if stem_result else None,
+            music_path=stem_result.get("music") if stem_result else None,
+        )
+
+    # --- Music/track identification (OPT-IN, external) ------------------------
+    identify_result: dict | None = None
+    if args.identify and audio_src:
+        # Prefer the isolated music stem (voiceover removed) when available.
+        id_src = stem_result.get("music") if stem_result and stem_result.get("music") else str(audio_src)
+        print("[watch] identifying track via Shazam (sends an audio fingerprint "
+              "to an external service)…", file=sys.stderr)
+        identify_result = identify_track(id_src)
 
     # --- Pacing / cut metrics -------------------------------------------------
     cand_ts = frame_meta.get("candidate_timestamps")
@@ -358,6 +428,12 @@ def build_report(source: str, args, config: dict, index: int = 0) -> dict:
         },
         "pacing": pacing,
         "audio": audio_result,
+        "stems": stem_result,
+        "lyrics_segments": lyrics_segments,
+        "lyrics_source": lyrics_source,
+        "lyrics_text": format_transcript(lyrics_segments) if lyrics_segments else None,
+        "timeline": timeline_result,
+        "identify": identify_result,
         "ocr_summary": ocr_summary,
         "subtitle_path": dl.get("subtitle_path"),
         "work": str(work),
@@ -492,6 +568,40 @@ def print_markdown_report(r: dict, header_level: int = 1) -> None:
     print("## Audio")
     print()
     print(format_audio_report(r["audio"]))
+    if r.get("stems"):
+        s = r["stems"]
+        print()
+        print(f"- **Stems separated** (Demucs {s.get('model')}, {s.get('device')}): "
+              f"isolated vocals + music tracks")
+
+    # Track identification (only present when --identify was used)
+    if r.get("identify") is not None:
+        print()
+        print("## Music / track ID")
+        print()
+        print("_Identified via Shazam (external lookup — this is the one step that "
+              "sends audio off-machine, run on request)._")
+        print()
+        print(format_identify_report(r["identify"]))
+
+    # Timeline
+    if r.get("timeline", {}).get("available"):
+        print()
+        print("## Timeline (speech / music / singing / silence)")
+        print()
+        print(format_timeline(r["timeline"]))
+
+    # Lyrics (isolated vocal stem)
+    if r.get("lyrics_text"):
+        print()
+        print("## Lyrics / vocals")
+        print()
+        print(f"_Transcribed from the isolated vocal stem ({r['lyrics_source']}). "
+              "Sung lyrics are approximate._")
+        print()
+        print("```")
+        print(r["lyrics_text"])
+        print("```")
 
     # Frames
     print()
@@ -573,6 +683,11 @@ def _json_safe_report(r: dict) -> dict:
         "pacing": r["pacing"],
         "audio": {k: v for k, v in r["audio"].items() if k != "loudness_curve"},
         "audio_loudness_curve": r["audio"].get("loudness_curve", []),
+        "stems": r.get("stems"),
+        "timeline": r.get("timeline"),
+        "identify": r.get("identify"),
+        "lyrics_source": r.get("lyrics_source"),
+        "lyrics_segments": r.get("lyrics_segments", []),
         "ocr_summary": r["ocr_summary"],
         "transcript_source": r["transcript_source"],
         "transcript_segments": r["transcript_segments"],

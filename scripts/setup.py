@@ -35,9 +35,14 @@ from config import get_config  # noqa: E402
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
 REQUIRED_PACKAGES = ["faster_whisper"]  # importable module name
-# Optional: on-screen text OCR. Absence never blocks /watch (frames + transcript
-# still work) — it just means burned-in captions/CTAs are not read back as text.
-OPTIONAL_PACKAGES = ["rapidocr_onnxruntime"]
+# Optional (light) packages, best-effort installed and never blocking:
+#   rapidocr_onnxruntime — on-screen text OCR
+#   shazamio             — music/track identification (OPT-IN at runtime; only the
+#                          `--identify` flag ever sends audio off-machine)
+OPTIONAL_PACKAGES = ["rapidocr_onnxruntime", "shazamio"]
+# Optional *heavy* features (not auto-installed — they pull a large dependency).
+# Stem separation / lyric transcription / fine timeline need Demucs (+ torch).
+OPTIONAL_HEAVY_PACKAGES = ["demucs"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 ENV_TEMPLATE = """# /watch configuration
@@ -65,6 +70,12 @@ ENV_TEMPLATE = """# /watch configuration
 # Audio intelligence (loudness, silence, speech/music content mix, hook audio).
 # auto = on when the media has an audio track | on | off
 # WATCH_AUDIO=auto
+
+# Stem separation (isolate vocals vs music) + sung-lyric transcription + a sharp
+# speech/music/singing timeline. HEAVY: needs `pip install demucs` (pulls torch)
+# and a one-time model download; slow on CPU, fast on GPU. Off unless turned on.
+# on | off   (or use --stems / --lyrics per run)
+# WATCH_STEMS=off
 """
 
 
@@ -88,6 +99,11 @@ def _check_packages() -> list[str]:
 def _check_optional_packages() -> list[str]:
     """Return importable names of optional packages (OCR) not installed."""
     return [mod for mod in OPTIONAL_PACKAGES if importlib.util.find_spec(mod) is None]
+
+
+def _check_optional_heavy_packages() -> list[str]:
+    """Return importable names of heavy optional packages (Demucs) not installed."""
+    return [mod for mod in OPTIONAL_HEAVY_PACKAGES if importlib.util.find_spec(mod) is None]
 
 
 _PERM_WARNED: set[str] = set()
@@ -233,7 +249,11 @@ def _install_packages(missing: list[str]) -> tuple[bool, str]:
 
     Maps importable module names to their PyPI distribution names.
     """
-    pypi_names = {"faster_whisper": "faster-whisper", "rapidocr_onnxruntime": "rapidocr-onnxruntime"}
+    pypi_names = {
+        "faster_whisper": "faster-whisper",
+        "rapidocr_onnxruntime": "rapidocr-onnxruntime",
+        "shazamio": "shazamio",
+    }
     dists = [pypi_names.get(m, m) for m in missing]
     if not dists:
         return True, "nothing to install"
@@ -257,6 +277,7 @@ def _status() -> dict:
     missing_bins = _check_binaries()
     missing_pkgs = _check_packages()
     missing_optional = _check_optional_packages()
+    missing_heavy = _check_optional_heavy_packages()
     setup_complete = not is_first_run()
 
     can_proceed = (not missing_bins) and (not missing_pkgs)
@@ -274,8 +295,11 @@ def _status() -> dict:
         "missing_binaries": missing_bins,
         "missing_packages": missing_pkgs,
         "missing_optional_packages": missing_optional,
+        "missing_heavy_packages": missing_heavy,
         "has_faster_whisper": not missing_pkgs,
         "has_ocr": "rapidocr_onnxruntime" not in missing_optional,
+        "has_identify": "shazamio" not in missing_optional,
+        "has_stems": "demucs" not in missing_heavy,
         "config_file": str(CONFIG_FILE),
         "watch_detail": cfg["detail"],
         "platform": platform.system(),
@@ -382,6 +406,15 @@ def cmd_install() -> int:
         print(f"[setup] created config: {CONFIG_FILE}")
     else:
         print(f"[setup] config exists: {CONFIG_FILE}")
+
+    # Note the heavy optional feature (stems) without installing it.
+    if _check_optional_heavy_packages():
+        print(
+            "[setup] optional (heavy): stem separation / lyric transcription / fine "
+            "timeline are available via `pip install demucs` (pulls torch; large). "
+            "Skipped by default — install it only if you want vocals/music split.",
+            file=sys.stderr,
+        )
 
     _write_setup_complete()
     bits = []
