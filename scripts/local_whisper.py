@@ -22,8 +22,17 @@ from pathlib import Path
 
 
 VALID_MODELS = ("tiny", "base", "small", "medium", "large-v3")
-DEFAULT_MODEL_CPU = "medium"
-DEFAULT_MODEL_GPU = "large-v3"
+# Ordered largest → smallest. Transcription starts at the preferred model and
+# cascades DOWN this list when a model fails to load or run (out-of-memory on a
+# smaller GPU, a failed weight download, a runtime/library error). A strong
+# machine therefore uses the best model, and a weaker one still succeeds on a
+# smaller fallback instead of returning nothing.
+MODEL_CASCADE = ("large-v3", "medium", "small", "base", "tiny")
+# Always attempt the best model first on every machine (teams with capable
+# hardware get maximum accuracy); the cascade handles anything that can't run it.
+DEFAULT_MODEL = "large-v3"
+DEFAULT_MODEL_CPU = DEFAULT_MODEL
+DEFAULT_MODEL_GPU = DEFAULT_MODEL
 
 # Approximate on-disk model sizes, only used for the one-time download notice.
 _MODEL_SIZE_HINT = {
@@ -106,6 +115,20 @@ def resolve_model(override: str | None = None, device: str | None = None) -> str
     return candidate
 
 
+def models_to_try(start_model: str) -> list[str]:
+    """Return ``start_model`` followed by every smaller model in the cascade.
+
+    This is the fallback order transcription walks: begin at the preferred
+    (largest configured) model and step down to progressively smaller ones only
+    if a bigger one fails to load or run.
+    """
+    if start_model in MODEL_CASCADE:
+        idx = MODEL_CASCADE.index(start_model)
+        return list(MODEL_CASCADE[idx:])
+    # Unknown/custom start: try it first, then fall through the whole cascade.
+    return [start_model, *MODEL_CASCADE]
+
+
 def extract_audio(video_path: str, out_path: Path) -> Path:
     """Extract mono 16kHz 64kbps mp3 — the exact params the old pipeline used."""
     if shutil.which("ffmpeg") is None:
@@ -174,33 +197,34 @@ def transcribe_video(
             f"`python3 {setup_py}` to set up /watch."
         )
 
-    device, compute_type = detect_device()
-    model_size = resolve_model(model_size, device=device)
+    base_device, base_compute = detect_device()
+    start_model = resolve_model(model_size, device=base_device)
+    cascade = models_to_try(start_model)
 
     print(f"[watch] extracting audio for local transcription…", file=sys.stderr)
     audio_path = extract_audio(video_path, audio_out)
     audio_bytes = audio_path.stat().st_size
 
-    if not _model_is_cached(model_size):
-        size_hint = _MODEL_SIZE_HINT.get(model_size, "")
-        print(
-            f"[watch] downloading {model_size} model ({size_hint}), "
-            "one-time only — cached for all future runs…",
-            file=sys.stderr,
-        )
+    def _run(model_name: str, dev: str, ctype: str) -> tuple[list[dict], object]:
+        """Load ``model_name`` on ``dev`` and fully materialize the transcript.
 
-    def _run(dev: str, ctype: str) -> tuple[list[dict], object]:
-        """Load the model on `dev` and fully materialize the transcript.
-
-        Materializing inside this function (not lazily) means CUDA runtime
-        failures surface here, where the caller can fall back to CPU.
+        Materializing inside this function (not lazily) means load- and
+        runtime-failures surface here, where the caller's cascade can fall back
+        to a smaller model or to CPU.
         """
+        if not _model_is_cached(model_name):
+            size_hint = _MODEL_SIZE_HINT.get(model_name, "")
+            print(
+                f"[watch] downloading {model_name} model ({size_hint}), "
+                "one-time only — cached for all future runs…",
+                file=sys.stderr,
+            )
         print(
             f"[watch] audio: {audio_bytes / 1024:.0f} kB — transcribing locally with "
-            f"faster-whisper '{model_size}' ({dev}/{ctype})…",
+            f"faster-whisper '{model_name}' ({dev}/{ctype})…",
             file=sys.stderr,
         )
-        model = WhisperModel(model_size, device=dev, compute_type=ctype)
+        model = WhisperModel(model_name, device=dev, compute_type=ctype)
         segments_iter, run_info = model.transcribe(
             str(audio_path.resolve()),
             vad_filter=True,        # skip silence: faster + no hallucinated text in gaps
@@ -230,38 +254,63 @@ def transcribe_video(
             })
         return collected, run_info
 
-    try:
-        segments, info = _run(device, compute_type)
-    except Exception as exc:
-        # A CUDA device can be *visible* without the CUDA/cuDNN runtime libs
-        # actually being loadable. Rather than fail, fall back to CPU so every
-        # machine on the team works out of the box.
-        if device == "cuda":
+    # Walk the model cascade: start at the preferred (largest) model and step
+    # down only when a model fails on BOTH its device attempts. For each model we
+    # try the detected device first (CUDA when present) then CPU, since a CUDA
+    # device can be visible without a loadable CUDA/cuDNN runtime.
+    last_exc: Exception | None = None
+    for model_name in cascade:
+        device_attempts = [(base_device, base_compute)]
+        if base_device == "cuda":
+            device_attempts.append(("cpu", "int8"))
+
+        for dev, ctype in device_attempts:
+            try:
+                segments, info = _run(model_name, dev, ctype)
+            except Exception as exc:
+                last_exc = exc
+                print(
+                    f"[watch] faster-whisper '{model_name}' on {dev} failed "
+                    f"({type(exc).__name__}: {exc})",
+                    file=sys.stderr,
+                )
+                continue
+
+            # The model loaded and ran. An empty result means the audio has no
+            # detectable speech (VAD-filtered music/silence) — a smaller model
+            # won't do better, so return empty rather than cascading down.
+            lang = getattr(info, "language", None)
+            if not segments:
+                print(
+                    f"[watch] faster-whisper '{model_name}' ({dev}) ran but found no "
+                    "speech segments — proceeding without a transcript",
+                    file=sys.stderr,
+                )
+                return [], f"faster-whisper {model_name} ({dev}, no speech)"
+
+            lang_note = f", language={lang}" if lang else ""
+            fell_back = model_name != start_model
+            note = f" (fell back from '{start_model}')" if fell_back else ""
             print(
-                f"[watch] CUDA transcription failed ({type(exc).__name__}: {exc}) — "
-                "falling back to CPU (int8)…",
+                f"[watch] transcribed {len(segments)} segments via faster-whisper "
+                f"'{model_name}' ({dev}){lang_note}{note}",
                 file=sys.stderr,
             )
-            device, compute_type = "cpu", "int8"
-            try:
-                segments, info = _run(device, compute_type)
-            except Exception as cpu_exc:
-                raise SystemExit(f"local transcription failed: {cpu_exc}")
-        else:
-            raise SystemExit(f"local transcription failed: {exc}")
+            return segments, f"faster-whisper {model_name} ({dev})"
 
-    if not segments:
-        raise SystemExit("faster-whisper returned no transcript segments")
+        # Both device attempts failed for this model → drop to the next smaller.
+        smaller = cascade[cascade.index(model_name) + 1] if model_name != cascade[-1] else None
+        if smaller:
+            print(
+                f"[watch] '{model_name}' failed on all devices — falling back to "
+                f"smaller model '{smaller}'…",
+                file=sys.stderr,
+            )
 
-    lang = getattr(info, "language", None)
-    lang_note = f", language={lang}" if lang else ""
-    print(
-        f"[watch] transcribed {len(segments)} segments via faster-whisper "
-        f"'{model_size}'{lang_note}",
-        file=sys.stderr,
+    raise SystemExit(
+        f"local transcription failed for every model in the cascade "
+        f"({', '.join(cascade)}): {last_exc}"
     )
-    backend_label = f"faster-whisper {model_size} ({device})"
-    return segments, backend_label
 
 
 if __name__ == "__main__":

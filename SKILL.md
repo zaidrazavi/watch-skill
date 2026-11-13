@@ -1,26 +1,32 @@
 ---
 name: watch
-version: "0.3.0"
-description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or fully local faster-whisper transcription — no API key, no cost), labels the opening 3-second ad hook, and hands the result to Claude so it can answer questions about what's in the video.
-argument-hint: "<video-url-or-path> [question]"
+version: "0.4.0"
+description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or fully local faster-whisper transcription — no API key, no cost), reads burned-in on-screen text with local OCR, profiles the audio (loudness, silence, speech/music mix), measures cut pacing, labels the opening 3-second ad hook, compares multiple videos side by side, and hands the result to Claude so it can answer questions about what's in the video. Everything runs locally and free.
+argument-hint: "<video-url-or-path> [more-urls…] [question]"
 allowed-tools: Bash, Read, AskUserQuestion
-homepage: https://github.com/zaidrazavi/watch-skill
-repository: https://github.com/zaidrazavi/watch-skill
-author: zaidrazavi
+homepage: https://github.com/bradautomates/claude-video
+repository: https://github.com/bradautomates/claude-video
+author: bradautomates
 license: MIT
 user-invocable: true
 ---
 
 # /watch
 
-You don't have a video input; this skill gives you one. A Python script gets captions first, optionally downloads the video, extracts frames as JPEGs (scene-aware, or fast keyframes at `efficient` detail), gets a timestamped transcript (native captions first, then **fully local** faster-whisper transcription as fallback — no API key, no cost), calls out the opening 3-second **ad hook** with word-level timing, and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript to answer the user.
+You don't have a video input; this skill gives you one. A Python script gets captions first, optionally downloads the video, extracts frames as JPEGs (scene-aware, or fast keyframes at `efficient` detail), gets a timestamped transcript (native captions first, then **fully local** faster-whisper transcription as fallback — no API key, no cost), **reads the burned-in on-screen text in each frame with local OCR**, **profiles the audio track** (loudness, silence, speech-vs-music content mix, hook loudness), **measures cut pacing** (cuts/sec, hook cuts, shot length), calls out the opening 3-second **ad hook** with word-level timing, and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript, on-screen text, audio profile, and pacing to answer the user.
+
+**New in 0.4 — four power-ups, all local and free:**
+- **On-screen text (OCR).** Each frame's burned-in captions, CTAs, and prices are read back as text (via `rapidocr-onnxruntime`, offline) and shown on the frame's line as `on-screen: "…"`. This is how you read the words an ad bakes into the pixels, which a 512px frame is often too small for you to read directly.
+- **Audio intelligence.** A `## Audio` section reports integrated loudness (LUFS), silence gaps, a speech / music-sfx / silence content mix, and — most important for ads — whether the hook is speech-led or music/sfx and how much louder it is than the rest.
+- **Pacing / cut metrics.** A `## Pacing` section reports total cuts, cuts/sec (with a pace label), average shot length, the number of cuts inside the hook window, and the fastest cut.
+- **Multi-video compare + JSON.** Pass more than one source to get a side-by-side hook comparison table. Pass `--json` (or `--report-json PATH`) to get the whole analysis as structured JSON instead of markdown.
 
 ## Resolve `SKILL_DIR` (do this before any command)
 
 Every `python3 ...` command below runs a bundled script under `SKILL_DIR/scripts/`. Set `SKILL_DIR` to the **absolute path of the directory containing THIS SKILL.md you just Read** — your harness told you that path in the Read result. The scripts are always a direct sibling of this file (`SKILL_DIR/scripts/watch.py`), in every install layout:
 
 ```
-Read ~/.claude/skills/watch/SKILL.md                                          → SKILL_DIR=~/.claude/skills/watch
+Read ~/.claude/plugins/cache/claude-video/watch/<ver>/skills/watch/SKILL.md → SKILL_DIR=…/skills/watch
 Read ~/.codex/skills/watch/SKILL.md                                          → SKILL_DIR=~/.codex/skills/watch
 Read ~/.agents/skills/watch/SKILL.md                                         → SKILL_DIR=~/.agents/skills/watch
 ```
@@ -77,7 +83,7 @@ The installer is idempotent — safe to re-run:
 python3 "${SKILL_DIR}/scripts/setup.py"
 ```
 
-On macOS with Homebrew, it auto-installs `ffmpeg` and `yt-dlp`; on Linux/Windows it prints the exact commands for those two. It **always** pip-installs `faster-whisper` (the local transcription engine) into the current Python on every platform — no user action needed. It scaffolds `~/.config/watch/.env` with commented defaults at `0600` perms.
+On macOS with Homebrew, it auto-installs `ffmpeg` and `yt-dlp`; on Linux/Windows it prints the exact commands for those two. It **always** pip-installs `faster-whisper` (the local transcription engine) into the current Python on every platform — no user action needed. It also **best-effort** pip-installs `rapidocr-onnxruntime` (the optional on-screen-text OCR engine); a failure there is non-fatal and only means OCR is skipped until installed. It scaffolds `~/.config/watch/.env` with commented defaults at `0600` perms.
 
 **First-run watch preference:** after the installer has scaffolded `~/.config/watch/.env`, use `AskUserQuestion` to ask one question:
 
@@ -95,7 +101,7 @@ WATCH_DETAIL=balanced
 
 Use the user's selected value. If they skip the question, keep the recommended default. Once dependencies, the API-key choice, and this preference are handled, write or update `SETUP_COMPLETE=true` in the same file. Do not ask this preference question again when `SETUP_COMPLETE=true`.
 
-**Structured mode (optional):** `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, missing_packages, has_faster_whisper, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install`. `can_proceed` is the operational gate (all binaries present AND faster-whisper importable). Branch on `can_proceed`/`first_run` to decide whether to run and whether to walk first-run setup.
+**Structured mode (optional):** `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, missing_packages, missing_optional_packages, has_faster_whisper, has_ocr, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install`. `can_proceed` is the operational gate (all binaries present AND faster-whisper importable). `has_ocr` reports whether the optional on-screen-text OCR engine is installed — it is **not** part of `can_proceed`, since /watch runs fine without it. Branch on `can_proceed`/`first_run` to decide whether to run and whether to walk first-run setup.
 
 **Whisper model quality (optional):** the local model size is set by `WHISPER_MODEL` in `~/.config/watch/.env` (`tiny | base | small | medium | large-v3`). It defaults to `medium` on CPU / `large-v3` on GPU, which is a good balance for ad research — you do **not** need to ask the user about it during setup. If a teammate wants faster (lower accuracy) or maximum accuracy, they can set `WHISPER_MODEL=` themselves, or you can pass `--whisper-model` for a single run.
 
@@ -146,6 +152,12 @@ Optional flags:
 - `--whisper-model tiny|base|small|medium|large-v3` — override the local model size for this run (default: `WHISPER_MODEL` in `.env`, else `medium` on CPU / `large-v3` on GPU)
 - `--no-whisper` — disable local transcription entirely (frames-only if no captions)
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the previous kept one (held slides, static screen recordings, paused video) so the frame budget goes to distinct content; the report's **Frames** line notes how many were dropped. Pass this only if the user needs every sampled frame (e.g. judging subtle frame-to-frame motion).
+- `--ocr` / `--no-ocr` — force or skip the on-screen text OCR pass. Default is **auto**: on when the OCR engine is installed and frames exist. Hook-window frames are always OCR'd first so they're never skipped by the cap.
+- `--ocr-min-conf C` — minimum OCR confidence to keep a line (default `0.5`). Raise it to drop noisy low-confidence reads.
+- `--ocr-max-frames N` — cap how many frames get OCR'd (default `60`). OCR is the slowest optional pass on long videos; lower this to speed it up (hook frames still get priority).
+- `--audio` / `--no-audio` — force or skip the audio intelligence pass. Default is **auto**: on when the media has an audio track. Only runs when video/audio is actually downloaded (so `--detail transcript` served from captions, which downloads no media, has no audio profile).
+- `--json` — emit the whole analysis as structured JSON to stdout **instead of** the markdown report (use when another tool/skill will consume it).
+- `--report-json PATH` — also write the structured JSON to a file while still printing the markdown report.
 
 ### Focusing on a section (higher frame rate)
 
@@ -178,10 +190,13 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 
 **Step 3 — Read every frame path the script lists.** The Read tool renders JPEGs directly as images for you. Read all frames in a single message (parallel tool calls) so you see them together. The frames are in chronological order with a `t=MM:SS` timestamp so you can align them to the transcript.
 
-**Step 4 — answer the user.** You now have two streams of evidence:
+**Step 4 — answer the user.** You now have several streams of evidence:
 - **Frames** — what's on screen at each timestamp
+- **On-screen text (OCR)** — the words burned into each frame (captions, CTAs, prices, product names), shown inline on each frame line as `on-screen: "…"`. Trust this for exact wording of overlays you can't read at 512px; it is often the single most useful stream for ad research (it captures the offer, the price, the CTA).
 - **Transcript** — what's said at each timestamp. The report's header shows the source (`captions` = yt-dlp pulled native subs; `faster-whisper <model> (cpu|cuda)` = transcribed locally).
-- **Hook** — the report calls out the first 3 seconds in a dedicated `## HOOK` section with word-level timing and the frame(s) in that window. For ad research, lead your answer with the hook: what's said and shown in the opening scroll-stopping moment.
+- **Audio** (`## Audio`) — loudness, silence, and the speech/music content mix, including whether the hook is voice-led or music/sfx and how much louder it is than the rest.
+- **Pacing** (`## Pacing`) — cuts, cuts/sec with a pace label, average shot length, and cuts inside the hook. Fast cutting in the hook is a deliberate retention tactic; call it out.
+- **Hook** — the report calls out the first 3 seconds in a dedicated `## HOOK` section with word-level timing, on-screen text, hook audio, hook cut count, and the frame(s) in that window. For ad research, lead your answer with the hook: what's said, shown, written on screen, and heard in the opening scroll-stopping moment.
 
 If the user asked a specific question, answer it directly citing timestamps. If they didn't ask anything, summarize what happens in the video — structure, key moments, notable visuals, spoken content.
 
@@ -233,6 +248,43 @@ Use `--no-whisper` to skip local transcription entirely (frames-only if no capti
 
 Because /watch is built for ad research, the report includes a dedicated **`## HOOK (0:00–0:03)`** section above the normal frames/transcript. It combines the exact **word-level** transcript of the opening 3 seconds (each word with its start/end in seconds) with the extracted frame(s) that fall in that window — the single most important moment in any ad. Word-level timing is available whenever the transcript came from local transcription (native captions are typically only line-level; the hook then falls back to segment text). To force a frame exactly on the hook, re-run with `--timestamps 0,1,2` or `--start 0 --end 3`.
 
+## On-screen text (OCR)
+
+Most ads bake their most important words — the hook line, the offer, the price, the CTA ("LINK IN BIO", "50% OFF"), the product name — straight into the pixels. At 512px those are often too small for you to read reliably from the frame alone, so /watch runs a dedicated OCR pass and prints the recognized text on each frame's line (`on-screen: "…"`) and in the `## HOOK` section.
+
+- **Engine:** [RapidOCR](https://github.com/RapidAI/RapidOCR) (`rapidocr-onnxruntime`) — pip-installable on every platform, runs on CPU via onnxruntime, bundles small ONNX models, and never touches the network after install. A Tesseract binary (`pytesseract`) is used as a fallback if RapidOCR is absent. If neither is present, OCR is silently skipped and the rest of the report is unaffected.
+- **Optional dependency.** OCR is *not* required for /watch to run — the installer adds it best-effort, and `setup.py --json` reports `has_ocr`. If it's missing, `pip install rapidocr-onnxruntime`.
+- **Default auto**, capped at `--ocr-max-frames` (default 60) with hook frames prioritized. Turn it off per run with `--no-ocr`, or pin it in `~/.config/watch/.env` with `WATCH_OCR=on|off|auto`.
+- **Tip:** for small or stylized overlay text, re-run with `--resolution 1024` — OCR accuracy improves markedly at higher frame resolution (at a higher image-token cost).
+
+## Audio intelligence
+
+The `## Audio` section profiles the audio track with ffmpeg only (no extra dependency, nothing leaves the machine):
+
+- **Hook audio** — is the opening 3 seconds speech-led, music/sfx, or near-silent, and how many dB louder the hook is than the rest of the clip (ads often slam the hook loud to stop the scroll).
+- **Content mix** — the share of the clip that is speech, music/sfx, or silence. "Speech" is the heuristic intersection of *audible* audio and *spoken* words from the transcript, so richer transcripts sharpen it (run with transcription on for an accurate mix).
+- **Integrated loudness** (LUFS) and true peak, plus total silence and gap count.
+
+Default auto (on when the media has an audio track). Disable with `--no-audio` or `WATCH_AUDIO=off`. Note it needs the actual media, so `--detail transcript` served purely from captions (no download) produces no audio profile.
+
+## Pacing / cut metrics
+
+The `## Pacing` section turns the scene detector's cut timestamps into numbers: total cuts, cuts/sec (with a `very fast | fast | moderate | slow` label), average shot length, the number of cuts inside the hook window, and the fastest cut gap. Only the scene (`balanced` / `token-burner`) and keyframe (`efficient`) engines produce cut data; the uniform fallback on a static screen recording reports pacing as unavailable. Use it to characterize edit rhythm — frenetic hook cutting is a deliberate retention tactic worth naming.
+
+## Comparing multiple videos
+
+Pass more than one source to `/watch` to compare ads side by side:
+
+```bash
+python3 "${SKILL_DIR}/scripts/watch.py" ad1.mp4 ad2.mp4 "$URL3" --detail efficient
+```
+
+The report opens with a **comparison table** (per-video duration, hook cuts, cuts/sec, hook audio type, hook on-screen text, and hook spoken line), then prints each video's full report beneath. This is the fast way to answer "what do these three winning ads have in common in their first 3 seconds?". `efficient` detail keeps the token cost sane across several videos; bump individual ones to `balanced` on a focused re-run.
+
+## Structured JSON output
+
+For piping into another tool or skill, `--json` emits the entire analysis (hook, pacing, audio, OCR per frame, transcript segments, frame paths) as JSON to stdout instead of markdown; `--report-json PATH` writes the JSON to a file while still printing the markdown. With multiple sources the JSON is an array, one object per video.
+
 ## Failure modes and handling
 
 - **Setup preflight failed** → run `python3 "${SKILL_DIR}/scripts/setup.py"` (auto-installs ffmpeg/yt-dlp via brew on macOS, pip-installs faster-whisper on every platform, scaffolds the `.env`).
@@ -242,6 +294,9 @@ Because /watch is built for ad research, the report includes a dedicated **`## H
 - **Transcription is slow on CPU for long videos** → a large model on CPU is thorough but not instant. Set a smaller `WHISPER_MODEL`, or focus on a section with `--start`/`--end`. A CUDA GPU is detected and used automatically when present.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
 - **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
+- **OCR unavailable** → the report simply omits `on-screen:` text and the `On-screen text` header line. To enable it, `pip install rapidocr-onnxruntime` (or re-run `python3 "${SKILL_DIR}/scripts/setup.py"`, which adds it best-effort). Proceed with frames + transcript; you can still read large overlay text off the frames yourself.
+- **On-screen text looks garbled / partial** → OCR on 512px frames struggles with small or stylized type. Re-run with `--resolution 1024` (and optionally `--ocr-min-conf 0.6`) for a cleaner read, or just read the frame image directly.
+- **No audio profile** → the clip has no audio track, `--no-audio` was passed, or `--detail transcript` served from captions downloaded no media. The `## Audio` section says so; proceed without it.
 
 ## Token efficiency
 
@@ -258,16 +313,18 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Runs `yt-dlp` locally to download the video and pull native captions when the source supports them (public data; the request goes directly to whatever host the URL points at)
 - Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when transcription is needed, a mono 16 kHz audio clip
 - Transcribes that audio clip **fully locally** with faster-whisper — the audio never leaves the machine and no API key is involved
-- On the first transcription only, downloads the Whisper model weights from Hugging Face (`huggingface.co`) into `~/.cache/huggingface`; cached and fully offline thereafter
+- Runs **on-screen text OCR fully locally** with RapidOCR (onnxruntime) over the extracted frames — the images never leave the machine, no API key
+- Profiles the audio with ffmpeg filters only (loudness/silence/RMS) — no extra service, nothing uploaded
+- On the first transcription only, downloads the Whisper model weights from Hugging Face (`huggingface.co`) into `~/.cache/huggingface`; cached and fully offline thereafter. The first OCR run similarly fetches RapidOCR's small bundled ONNX models once (shipped with the pip package), then runs offline
 - Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
 - Reads / creates `~/.config/watch/.env` (mode `0600`) to store watch preferences (`WATCH_DETAIL`, optional `WHISPER_MODEL`) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
 
 **What this skill does NOT do:**
-- Does not upload the video or the audio to any transcription API — all transcription runs locally on this machine
+- Does not upload the video, the audio, or the frames to any API — all transcription, OCR, and audio analysis run locally on this machine
 - Does not require, store, or transmit any API key — there is none
 - Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
 - Does not persist anything outside the working directory, `~/.config/watch/.env`, and the one-time Hugging Face model cache — clean up the working directory when you're done (Step 5)
 
-**Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption parsing + transcript formatting), `scripts/local_whisper.py` (fully local faster-whisper transcription), `scripts/setup.py` (preflight + installer)
+**Bundled scripts:** `scripts/watch.py` (entry point / orchestration / rendering), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction + scene/keyframe/dedup), `scripts/transcribe.py` (caption parsing + transcript formatting), `scripts/local_whisper.py` (fully local faster-whisper transcription), `scripts/ocr.py` (local on-screen text OCR), `scripts/audio.py` (ffmpeg audio intelligence), `scripts/metrics.py` (cut/pacing metrics), `scripts/config.py` (shared config), `scripts/setup.py` (preflight + installer)
 
 Review scripts before first use to verify behavior.

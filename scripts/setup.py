@@ -35,6 +35,9 @@ from config import get_config  # noqa: E402
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
 REQUIRED_PACKAGES = ["faster_whisper"]  # importable module name
+# Optional: on-screen text OCR. Absence never blocks /watch (frames + transcript
+# still work) — it just means burned-in captions/CTAs are not read back as text.
+OPTIONAL_PACKAGES = ["rapidocr_onnxruntime"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 ENV_TEMPLATE = """# /watch configuration
@@ -53,6 +56,15 @@ ENV_TEMPLATE = """# /watch configuration
 # Allowed values: transcript | efficient | balanced | token-burner
 # Keep the value on its own line with no trailing comment.
 # WATCH_DETAIL=balanced
+
+# On-screen text OCR (reads burned-in captions/CTAs/prices from frames).
+# Needs the optional `rapidocr-onnxruntime` package (the installer adds it).
+# auto = on when the engine is installed and frames exist | on | off
+# WATCH_OCR=auto
+
+# Audio intelligence (loudness, silence, speech/music content mix, hook audio).
+# auto = on when the media has an audio track | on | off
+# WATCH_AUDIO=auto
 """
 
 
@@ -71,6 +83,11 @@ def _check_packages() -> list[str]:
         if importlib.util.find_spec(mod) is None:
             missing.append(mod)
     return missing
+
+
+def _check_optional_packages() -> list[str]:
+    """Return importable names of optional packages (OCR) not installed."""
+    return [mod for mod in OPTIONAL_PACKAGES if importlib.util.find_spec(mod) is None]
 
 
 _PERM_WARNED: set[str] = set()
@@ -216,7 +233,7 @@ def _install_packages(missing: list[str]) -> tuple[bool, str]:
 
     Maps importable module names to their PyPI distribution names.
     """
-    pypi_names = {"faster_whisper": "faster-whisper"}
+    pypi_names = {"faster_whisper": "faster-whisper", "rapidocr_onnxruntime": "rapidocr-onnxruntime"}
     dists = [pypi_names.get(m, m) for m in missing]
     if not dists:
         return True, "nothing to install"
@@ -239,6 +256,7 @@ def _status() -> dict:
     """
     missing_bins = _check_binaries()
     missing_pkgs = _check_packages()
+    missing_optional = _check_optional_packages()
     setup_complete = not is_first_run()
 
     can_proceed = (not missing_bins) and (not missing_pkgs)
@@ -255,7 +273,9 @@ def _status() -> dict:
         "setup_complete": setup_complete,
         "missing_binaries": missing_bins,
         "missing_packages": missing_pkgs,
+        "missing_optional_packages": missing_optional,
         "has_faster_whisper": not missing_pkgs,
+        "has_ocr": "rapidocr_onnxruntime" not in missing_optional,
         "config_file": str(CONFIG_FILE),
         "watch_detail": cfg["detail"],
         "platform": platform.system(),
@@ -339,6 +359,23 @@ def cmd_install() -> int:
             return 2
         installed_pkgs = True
 
+    # 2b. Optional packages (OCR). Best-effort: a failure here never blocks
+    # setup, because /watch runs fine without on-screen text OCR.
+    installed_ocr = False
+    missing_optional = _check_optional_packages()
+    if missing_optional:
+        ok, msg = _install_packages(missing_optional)
+        print(f"[setup] optional (OCR): {msg}", file=sys.stderr)
+        if ok and not _check_optional_packages():
+            installed_ocr = True
+        else:
+            print(
+                "[setup] on-screen text OCR is unavailable (rapidocr-onnxruntime not "
+                "installed). /watch still works with frames + transcript; install it "
+                "later with `pip install rapidocr-onnxruntime` to read burned-in text.",
+                file=sys.stderr,
+            )
+
     # 3. Config scaffold + completion marker.
     created = _scaffold_env()
     if created:
@@ -352,6 +389,8 @@ def cmd_install() -> int:
         bits.append("binaries")
     if installed_pkgs:
         bits.append("faster-whisper")
+    if installed_ocr:
+        bits.append("rapidocr (OCR)")
     installed_note = f" (installed {', '.join(bits)})" if bits else ""
     print(f"[setup] ready — 100% local transcription, no API key needed{installed_note}.")
     return 0

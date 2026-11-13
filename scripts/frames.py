@@ -539,6 +539,9 @@ def extract_scene_or_uniform(
         end_seconds=end_seconds,
     )
     scene_count = len(scene_frames)
+    # Capture every detected cut's timestamp BEFORE dedup/sampling thins the set,
+    # so pacing/cut metrics stay accurate even when only some frames survive.
+    candidate_timestamps = [f["timestamp_seconds"] for f in scene_frames]
     if scene_count >= SCENE_MIN_FRAMES:
         deduped, n_dropped = dedupe_perceptual(scene_frames) if dedup else (scene_frames, 0)
         cap = len(deduped) if max_frames is None else max_frames
@@ -546,6 +549,7 @@ def extract_scene_or_uniform(
         return selected, {
             "engine": "scene",
             "candidate_count": scene_count,
+            "candidate_timestamps": candidate_timestamps,
             "deduped_count": n_dropped,
             "selected_count": len(selected),
             "fallback": False,
@@ -670,12 +674,14 @@ def extract_keyframes(
     # Detect-all, drop near-duplicates, then even-sample down to the cap (first +
     # last always kept). ``max_frames is None`` (uncapped) keeps every keyframe.
     candidate_count = len(candidates)
+    candidate_timestamps = [c["timestamp_seconds"] for c in candidates]
     deduped, n_dropped = dedupe_perceptual(candidates) if dedup else (candidates, 0)
     cap = len(deduped) if max_frames is None else max_frames
     selected = _even_sample(deduped, cap)
     return selected, {
         "engine": "keyframe",
         "candidate_count": candidate_count,
+        "candidate_timestamps": candidate_timestamps,
         "deduped_count": n_dropped,
         "selected_count": len(selected),
         "fallback": False,

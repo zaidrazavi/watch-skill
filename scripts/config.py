@@ -13,6 +13,13 @@ DEFAULT_DETAIL = "balanced"
 
 DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
 
+# OCR / audio defaults. "auto" lets /watch decide at runtime (OCR on when an
+# engine is installed and frames exist; audio on when the media has an audio
+# track). Users can pin "on"/"off" in ~/.config/watch/.env.
+TOGGLES = {"auto", "on", "off"}
+DEFAULT_OCR = "auto"
+DEFAULT_AUDIO = "auto"
+
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:
     if path is None:
@@ -56,8 +63,17 @@ def get_config() -> dict[str, object]:
     if detail not in DETAILS:
         detail = DEFAULT_DETAIL
 
+    ocr = (os.environ.get("WATCH_OCR") or file_values.get("WATCH_OCR") or DEFAULT_OCR).lower()
+    if ocr not in TOGGLES:
+        ocr = DEFAULT_OCR
+    audio = (os.environ.get("WATCH_AUDIO") or file_values.get("WATCH_AUDIO") or DEFAULT_AUDIO).lower()
+    if audio not in TOGGLES:
+        audio = DEFAULT_AUDIO
+
     return {
         "detail": detail,
+        "ocr": ocr,
+        "audio": audio,
         "config_file": str(CONFIG_FILE),
     }
 
