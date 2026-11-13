@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "0.5.1"
+version: "0.6.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or fully local faster-whisper transcription — no API key, no cost, with a largest→smallest model fallback), reads burned-in on-screen text with local OCR, profiles the audio (loudness, silence, speech/music mix), separates vocals from music and transcribes sung lyrics with local Demucs, builds a speech/music/singing/silence timeline, measures cut pacing, labels the opening 3-second ad hook, compares multiple videos side by side, and hands the result to Claude so it can answer questions about what's in the video. Everything runs locally and free.
 argument-hint: "<video-url-or-path> [more-urls…] [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -108,7 +108,7 @@ WATCH_DETAIL=balanced
 
 Use the user's selected value. If they skip the question, keep the recommended default. Once dependencies, the API-key choice, and this preference are handled, write or update `SETUP_COMPLETE=true` in the same file. Do not ask this preference question again when `SETUP_COMPLETE=true`.
 
-**Structured mode (optional):** `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, missing_packages, missing_optional_packages, missing_heavy_packages, has_faster_whisper, has_ocr, has_identify, has_stems, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install`. `can_proceed` is the operational gate (all binaries present AND faster-whisper importable). `has_ocr`, `has_identify`, and `has_stems` report whether the optional OCR engine, the opt-in Shazam identifier, and the optional (heavy) Demucs stem-separation engine are installed — none is part of `can_proceed`, since /watch runs fine without them. Branch on `can_proceed`/`first_run` to decide whether to run and whether to walk first-run setup.
+**Structured mode (optional):** `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, missing_packages, missing_optional_packages, missing_heavy_packages, has_faster_whisper, has_ocr, has_identify, has_precise_pacing, has_stems, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install`. `can_proceed` is the operational gate (all binaries present AND faster-whisper importable). `has_ocr`, `has_identify`, `has_precise_pacing`, and `has_stems` report whether the optional OCR engine, the music identifier, the PySceneDetect precise-pacing engine, and the optional (heavy) Demucs stem-separation engine are installed — none is part of `can_proceed`, since /watch runs fine without them. Branch on `can_proceed`/`first_run` to decide whether to run and whether to walk first-run setup.
 
 **Whisper model quality (optional):** the local model size is set by `WHISPER_MODEL` in `~/.config/watch/.env` (`tiny | base | small | medium | large-v3`). It defaults to `medium` on CPU / `large-v3` on GPU, which is a good balance for ad research — you do **not** need to ask the user about it during setup. If a teammate wants faster (lower accuracy) or maximum accuracy, they can set `WHISPER_MODEL=` themselves, or you can pass `--whisper-model` for a single run.
 
@@ -293,12 +293,17 @@ What stems do **not** do: they don't *name* the song — that's what `--identify
 **When to use it:** only when the user's question is about the audio itself — "what song is this?", "what's the music / sound?", "is this a trending audio?", "name the track". Do **not** add `--identify` to ordinary visual/transcript/ad-hook questions; keep those fully local.
 
 **Behavior and limits:**
-- It identifies **music** (commercial/catalogued songs). It does **not** name arbitrary sound effects, original scores, or unreleased audio — those return "no catalogued music matched", which is itself a useful answer (it's not a known song).
-- It matches far better on a clean music track, so when `--stems` is also set it runs on the **isolated music stem** (voiceover removed) rather than the raw mix. For a voice-over-music ad, `--identify` alone (no stems) often returns no match while `--identify --stems` matches — prefer combining them when the audio has prominent speech.
-- The result is a `## Music / track ID` section (title, artist, album, genre, label, Shazam link) and an `identify` object in the JSON.
-- Requires `pip install shazamio` (the installer adds it best-effort; `setup.py --json` reports `has_identify`). Fail-open: if it's missing or the lookup fails, the section says so and nothing else is affected.
+- It identifies **music** (catalogued songs). It does **not** name arbitrary sound effects, original scores, or unreleased audio — those return "no catalogued music matched", which is itself a useful answer.
+- It matches far better on a clean music track, so when `--stems` is also set it runs on the **isolated music stem** (voiceover removed). For a voice-over-music ad, `--identify` alone often returns no match while `--identify --stems` matches — combine them when there's prominent speech.
+- The result is a `## Music / track ID` section and an `identify` object in the JSON; a no-match lists the providers tried.
+- Requires `pip install shazamio` (installer adds it best-effort; `setup.py --json` reports `has_identify`). Fail-open.
 
-There is no fully-local song-naming option (naming a track requires an external catalog); if the user needs 100% offline, the local answer is the stems + timeline + lyric transcript, not a track name.
+**Naming royalty-free / library music (not in Shazam).** Shazam only indexes commercial releases, so royalty-free library tracks (Epidemic Sound, Artlist, TikTok's library, etc.) usually come back "no match". There are three stronger paths, in order of effort:
+1. **Platform-declared audio (free, automatic).** Many TikTok/YouTube posts *name the audio themselves*; /watch reads that from the post metadata and shows a **Platform audio** line in the header — no fingerprinting, no upload. Instagram usually omits it. Check this first; it's the cheapest answer.
+2. **ACRCloud (broader catalog + your own tracks).** `--identify` automatically uses ACRCloud *before* Shazam when `ACRCLOUD_HOST` / `ACRCLOUD_ACCESS_KEY` / `ACRCLOUD_ACCESS_SECRET` are set in `~/.config/watch/.env` (free account at console.acrcloud.com). ACRCloud covers far more library/UGC music than Shazam, and you can upload the specific tracks you care about into a **custom bucket** so it names them exactly. The result's provider is shown.
+3. **Fully-local self-indexed fingerprinting.** For a 100% offline answer you build your own fingerprint database of the tracks you want recognized (e.g. your Epidemic Sound downloads) with a tool like `audfprint`, then match against it locally. This never names an *unknown* song — only the ones you indexed — but it's private and exact for your catalog. (Not bundled; it's a separate local DB you maintain.)
+
+Bottom line for the user: there is no way to name *every* royalty-free track offline (the catalog is the moat), but Platform audio + ACRCloud cover most real cases, and a self-indexed library covers your own.
 
 ## Speech / music / singing / silence timeline
 
@@ -311,7 +316,13 @@ On by default whenever audio is analyzed (the no-stems version is cheap — just
 
 ## Pacing / cut metrics
 
-The `## Pacing` section turns the scene detector's cut timestamps into numbers: total cuts, cuts/sec (with a `very fast | fast | moderate | slow` label), average shot length, the number of cuts inside the hook window, and the fastest cut gap. It is available in every frame-producing mode — scene (`balanced`/`token-burner`), keyframe (`efficient`), **and the uniform fallback**: a low-cut clip (a continuous AI-image slideshow, a static talking head, a screen recording) keeps the few cuts it did detect and reports them as a valid "slow / static" pace with a note, rather than "unavailable". Only `--detail transcript` (no frames at all) has no pacing. Use it to characterize edit rhythm — frenetic hook cutting is a deliberate retention tactic worth naming, and a slow slideshow pace is itself a finding.
+The `## Pacing` section reports total cuts, cuts/sec (with a `very fast | fast | moderate | slow` label), average shot length, cuts inside the hook window, the fastest cut gap, and **the exact timestamp of every cut**.
+
+**Precise engine (default when installed):** when [PySceneDetect](https://www.scenedetect.com) is available (`pip install scenedetect[opencv]`, added best-effort by the installer; `setup.py --json` reports `has_precise_pacing`), /watch runs it separately on the video for metrics. Its AdaptiveDetector catches **hard cuts AND gradual transitions** (crossfades, dissolves, slideshow swaps) that the ffmpeg scene filter misses, giving an exact cut list. This decouples pacing from frame extraction, so it's accurate in every detail mode where the video is downloaded (including `efficient` and even `--detail transcript` on a local file).
+
+**Fallback:** without PySceneDetect it uses the frame engine's cut data — scene (`balanced`/`token-burner`), keyframe (`efficient`), or the uniform fallback, which keeps the few cuts it detected and reports a valid "slow/static" pace rather than "unavailable". Only `--detail transcript` served purely from captions (no video downloaded) has no pacing.
+
+Use it to characterize edit rhythm — frenetic hook cutting is a deliberate retention tactic worth naming; a slow slideshow pace is itself a finding.
 
 ## Comparing multiple videos
 
@@ -373,6 +384,6 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
 - Does not persist anything outside the working directory, `~/.config/watch/.env`, and the one-time Hugging Face model cache — clean up the working directory when you're done (Step 5)
 
-**Bundled scripts:** `scripts/watch.py` (entry point / orchestration / rendering), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction + scene/keyframe/dedup), `scripts/transcribe.py` (caption parsing + transcript formatting), `scripts/local_whisper.py` (fully local faster-whisper transcription with model cascade), `scripts/ocr.py` (local on-screen text OCR), `scripts/audio.py` (ffmpeg audio intelligence), `scripts/stems.py` (local Demucs vocal/music separation), `scripts/timeline.py` (speech/music/singing timeline), `scripts/identify.py` (opt-in Shazam track identification — the only non-local script), `scripts/metrics.py` (cut/pacing metrics), `scripts/config.py` (shared config), `scripts/setup.py` (preflight + installer)
+**Bundled scripts:** `scripts/watch.py` (entry point / orchestration / rendering), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction + scene/keyframe/dedup), `scripts/transcribe.py` (caption parsing + transcript formatting), `scripts/local_whisper.py` (fully local faster-whisper transcription with model cascade), `scripts/ocr.py` (local on-screen text OCR), `scripts/audio.py` (ffmpeg audio intelligence), `scripts/stems.py` (local Demucs vocal/music separation), `scripts/timeline.py` (speech/music/singing timeline), `scripts/scenes.py` (precise PySceneDetect cut/transition detection), `scripts/identify.py` (opt-in music ID via Shazam/ACRCloud — the only non-local script), `scripts/metrics.py` (cut/pacing metrics), `scripts/config.py` (shared config), `scripts/setup.py` (preflight + installer)
 
 Review scripts before first use to verify behavior.

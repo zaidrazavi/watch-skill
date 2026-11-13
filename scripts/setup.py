@@ -39,7 +39,8 @@ REQUIRED_PACKAGES = ["faster_whisper"]  # importable module name
 #   rapidocr_onnxruntime — on-screen text OCR
 #   shazamio             — music/track identification (OPT-IN at runtime; only the
 #                          `--identify` flag ever sends audio off-machine)
-OPTIONAL_PACKAGES = ["rapidocr_onnxruntime", "shazamio"]
+#   scenedetect          — precise cut/transition detection for pacing (PySceneDetect)
+OPTIONAL_PACKAGES = ["rapidocr_onnxruntime", "shazamio", "scenedetect"]
 # Optional *heavy* features (not auto-installed — they pull a large dependency).
 # Stem separation / lyric transcription / fine timeline need Demucs (+ torch).
 OPTIONAL_HEAVY_PACKAGES = ["demucs"]
@@ -76,6 +77,15 @@ ENV_TEMPLATE = """# /watch configuration
 # and a one-time model download; slow on CPU, fast on GPU. Off unless turned on.
 # on | off   (or use --stems / --lyrics per run)
 # WATCH_STEMS=off
+
+# Optional: ACRCloud music recognition (used by --identify when set). Broader
+# catalog than Shazam — covers more royalty-free/library music, and you can match
+# against your OWN uploaded tracks (a "custom bucket"). Free account + a project
+# at https://console.acrcloud.com; copy the three values from its Access tab.
+# Leaving these unset simply falls back to Shazam.
+# ACRCLOUD_HOST=identify-eu-west-1.acrcloud.com
+# ACRCLOUD_ACCESS_KEY=
+# ACRCLOUD_ACCESS_SECRET=
 """
 
 
@@ -253,6 +263,7 @@ def _install_packages(missing: list[str]) -> tuple[bool, str]:
         "faster_whisper": "faster-whisper",
         "rapidocr_onnxruntime": "rapidocr-onnxruntime",
         "shazamio": "shazamio",
+        "scenedetect": "scenedetect[opencv]",
     }
     dists = [pypi_names.get(m, m) for m in missing]
     if not dists:
@@ -299,6 +310,7 @@ def _status() -> dict:
         "has_faster_whisper": not missing_pkgs,
         "has_ocr": "rapidocr_onnxruntime" not in missing_optional,
         "has_identify": "shazamio" not in missing_optional,
+        "has_precise_pacing": "scenedetect" not in missing_optional,
         "has_stems": "demucs" not in missing_heavy,
         "config_file": str(CONFIG_FILE),
         "watch_detail": cfg["detail"],

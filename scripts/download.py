@@ -105,6 +105,11 @@ def _read_info(info_path: Path, url: str) -> dict:
                 "uploader": raw.get("uploader") or raw.get("channel"),
                 "duration": raw.get("duration"),
                 "url": raw.get("webpage_url") or url,
+                # Platform-declared audio (TikTok/YouTube often name the track;
+                # Instagram usually doesn't). Free, no fingerprinting, no upload.
+                "track": raw.get("track"),
+                "artist": raw.get("artist"),
+                "album": raw.get("album"),
             }
         except Exception as exc:
             print(f"[watch] info.json parse failed: {exc}", file=sys.stderr)

@@ -39,6 +39,7 @@ from timeline import build_timeline, format_timeline  # noqa: E402
 from identify import identify_track, format_identify_report  # noqa: E402
 import ocr as ocr_mod  # noqa: E402
 import stems as stems_mod  # noqa: E402
+import scenes as scenes_mod  # noqa: E402
 
 
 HOOK_SECONDS = 3.0
@@ -374,11 +375,23 @@ def build_report(source: str, args, config: dict, index: int = 0) -> dict:
         identify_result = identify_track(id_src)
 
     # --- Pacing / cut metrics -------------------------------------------------
-    cand_ts = frame_meta.get("candidate_timestamps")
-    pacing = compute_pacing(
-        cand_ts, effective_duration if focused else full_duration,
-        engine=frame_meta.get("engine", "none"), hook_start=effective_start,
-    )
+    # Prefer PySceneDetect for EXACT cuts + gradual transitions; fall back to the
+    # frame engine's cut data when it isn't installed.
+    pacing_dur = effective_duration if focused else full_duration
+    scene_data = None
+    if video_path and scenes_mod.scenes_available():
+        print("[watch] detecting exact cuts/transitions (PySceneDetect)…", file=sys.stderr)
+        scene_data = scenes_mod.detect_scenes(video_path, start_seconds=start_sec, end_seconds=end_sec)
+    if scene_data and scene_data.get("available"):
+        pacing = compute_pacing(
+            scene_data["shot_start_times"], pacing_dur,
+            engine=scene_data["engine"], hook_start=effective_start,
+        )
+    else:
+        pacing = compute_pacing(
+            frame_meta.get("candidate_timestamps"), pacing_dur,
+            engine=frame_meta.get("engine", "none"), hook_start=effective_start,
+        )
 
     # --- Hook assembly --------------------------------------------------------
     hook_start = effective_start
@@ -427,6 +440,7 @@ def build_report(source: str, args, config: dict, index: int = 0) -> dict:
             "frames": hook_frames, "line": hook_line, "ocr": hook_ocr,
         },
         "pacing": pacing,
+        "scenes": scene_data,
         "audio": audio_result,
         "stems": stem_result,
         "lyrics_segments": lyrics_segments,
@@ -466,6 +480,9 @@ def print_markdown_report(r: dict, header_level: int = 1) -> None:
         print(f"- **Title:** {info['title']}")
     if info.get("uploader"):
         print(f"- **Uploader:** {info['uploader']}")
+    if info.get("track") or info.get("artist"):
+        pa = " — ".join(x for x in (info.get("track"), info.get("artist")) if x)
+        print(f"- **Platform audio:** {pa} _(named by the post itself — free, no fingerprinting)_")
     print(f"- **Duration:** {format_time(r['full_duration'])} ({r['full_duration']:.1f}s)")
     if focused:
         print(f"- **Focus range:** {format_time(r['effective_start'])} → {format_time(r['effective_end'])} "
@@ -665,6 +682,8 @@ def _json_safe_report(r: dict) -> dict:
         "source": r["source"],
         "title": r["info"].get("title"),
         "uploader": r["info"].get("uploader"),
+        "platform_audio": {"track": r["info"].get("track"), "artist": r["info"].get("artist"),
+                           "album": r["info"].get("album")},
         "detail": r["detail"],
         "duration_seconds": round(r["full_duration"], 2),
         "focused": r["focused"],
@@ -681,6 +700,7 @@ def _json_safe_report(r: dict) -> dict:
             "cuts": r["pacing"].get("hook_cuts"),
         },
         "pacing": r["pacing"],
+        "scenes": r.get("scenes"),
         "audio": {k: v for k, v in r["audio"].items() if k != "loudness_curve"},
         "audio_loudness_curve": r["audio"].get("loudness_curve", []),
         "stems": r.get("stems"),

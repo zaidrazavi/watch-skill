@@ -36,12 +36,16 @@ def compute_pacing(
         "hook_cuts": None,
         "fastest_cut_gap_s": None,
         "pace_label": None,
+        "cut_times": None,
         "note": None,
     }
-    # Report pacing from any engine that handed us cut timestamps — including the
-    # uniform fallback, which still carries the few scene cuts it detected before
-    # falling back. A low-cut clip yields a valid "slow/static" pace, never "N/A".
-    if not candidate_timestamps or engine not in ("scene", "keyframe", "uniform"):
+    # Report pacing from any engine that handed us cut timestamps — the precise
+    # PySceneDetect pass, the frame scene/keyframe engines, or the uniform
+    # fallback (which still carries the few cuts it detected). A low-cut clip
+    # yields a valid "slow/static" pace, never "N/A".
+    if not candidate_timestamps or engine not in (
+        "scene", "keyframe", "uniform", "pyscenedetect-adaptive"
+    ):
         return result
 
     ts = sorted(t for t in candidate_timestamps if t is not None)
@@ -50,6 +54,7 @@ def compute_pacing(
 
     shots = len(ts)
     cuts = max(0, shots - 1)
+    cut_times = [round(t, 2) for t in ts[1:]]  # every boundary after the first
     hook_end = hook_start + hook_seconds
     hook_cuts = sum(1 for t in ts if hook_start < t <= hook_end + 1e-6)
 
@@ -71,7 +76,9 @@ def compute_pacing(
             pace_label = "slow / static"
 
     note = None
-    if engine == "keyframe":
+    if engine == "pyscenedetect-adaptive":
+        note = "exact cuts incl. gradual transitions (PySceneDetect)"
+    elif engine == "keyframe":
         note = "cuts approximated from keyframes"
     elif engine == "uniform":
         note = "few hard cuts — continuous/slideshow-style footage"
@@ -85,6 +92,7 @@ def compute_pacing(
         "hook_cuts": hook_cuts,
         "fastest_cut_gap_s": fastest_gap,
         "pace_label": pace_label,
+        "cut_times": cut_times,
         "note": note,
     })
     return result
@@ -102,6 +110,14 @@ def format_pacing_report(p: dict) -> str:
     ]
     if p.get("fastest_cut_gap_s") is not None:
         lines.append(f"- **Fastest cut:** {p['fastest_cut_gap_s']}s between shots")
+    cut_times = p.get("cut_times") or []
+    if cut_times:
+        def _mmss(t: float) -> str:
+            m, s = divmod(int(round(t)), 60)
+            return f"{m}:{s:02d}"
+        shown = cut_times if len(cut_times) <= 30 else cut_times[:30]
+        tail = "" if len(cut_times) <= 30 else f" … (+{len(cut_times) - 30} more)"
+        lines.append(f"- **Cut timestamps:** {', '.join(_mmss(t) for t in shown)}{tail}")
     if p.get("note"):
         lines.append(f"- _Note: {p['note']}._")
     return "\n".join(lines)
