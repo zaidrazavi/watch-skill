@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "0.6.0"
+version: "0.7.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or fully local faster-whisper transcription — no API key, no cost, with a largest→smallest model fallback), reads burned-in on-screen text with local OCR, profiles the audio (loudness, silence, speech/music mix), separates vocals from music and transcribes sung lyrics with local Demucs, builds a speech/music/singing/silence timeline, measures cut pacing, labels the opening 3-second ad hook, compares multiple videos side by side, and hands the result to Claude so it can answer questions about what's in the video. Everything runs locally and free.
 argument-hint: "<video-url-or-path> [more-urls…] [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -114,6 +114,10 @@ Use the user's selected value. If they skip the question, keep the recommended d
 
 Within a single session, you can skip Step 0 on follow-up `/watch` calls — once `--check` returned 0, nothing about the environment changes between turns.
 
+## Robust downloads (blocked / login-gated links)
+
+Downloads are hardened against the common "it won't open / got blocked" failures: every yt-dlp call uses **browser TLS impersonation** (`--impersonate chrome`, via curl_cffi) so requests look like a real browser, plus retries, backoff, and a second slower rate-limit-safe pass. On failure it prints a **classified cause** and the exact fix. The most common real fix for Instagram/TikTok is a logged-in session — set `WATCH_COOKIES_BROWSER=<your browser>` (chrome/edge/firefox/brave/…) or `WATCH_COOKIES_FILE=cookies.txt` in `~/.config/watch/.env`; yt-dlp then uses the user's own cookies locally (nothing uploaded). An "unable to extract" error means a stale extractor → `yt-dlp -U`. Impersonation can be toggled with `WATCH_IMPERSONATE=off`.
+
 ## When to use
 
 - User pastes a video URL (YouTube, Vimeo, X, TikTok, Twitch clip, most yt-dlp-supported sites) and asks about it.
@@ -202,6 +206,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 **Step 3 — Read every frame path the script lists.** The Read tool renders JPEGs directly as images for you. Read all frames in a single message (parallel tool calls) so you see them together. The frames are in chronological order with a `t=MM:SS` timestamp so you can align them to the transcript.
 
 **Step 4 — answer the user.** You now have several streams of evidence:
+- **Post signals** — the header shows **engagement** (views/likes/comments, post date) and a **Post caption & hashtags** section, pulled from the post metadata. For ad/content research these are first-class: a hook that earned big numbers is worth studying, and the caption/hashtags reveal the positioning and targeting. Lead with them when the user is sizing up a post's performance.
 - **Frames** — what's on screen at each timestamp
 - **On-screen text (OCR)** — the words burned into each frame (captions, CTAs, prices, product names), shown inline on each frame line as `on-screen: "…"`. Trust this for exact wording of overlays you can't read at 512px; it is often the single most useful stream for ad research (it captures the offer, the price, the CTA).
 - **Transcript** — what's said at each timestamp. The report's header shows the source (`captions` = yt-dlp pulled native subs; `faster-whisper <model> (cpu|cuda)` = transcribed locally).
@@ -346,7 +351,7 @@ For piping into another tool or skill, `--json` emits the entire analysis (hook,
 - **First-run model download is slow** → the first transcription downloads the model (~1.5 GB for `medium`); a "[watch] downloading … one-time only" line prints to stderr. This happens once, then it's cached. If bandwidth is a concern, set `WHISPER_MODEL=small` (or `base`/`tiny`) in `~/.config/watch/.env`.
 - **Transcription is slow on CPU for long videos** → a large model on CPU is thorough but not instant. Set a smaller `WHISPER_MODEL`, or focus on a section with `--start`/`--end`. A CUDA GPU is detected and used automatically when present.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
-- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
+- **Download fails / link won't open / "got blocked"** → the downloader is already hardened (browser **impersonation** via curl_cffi, retries + backoff, and a second slower rate-limit-safe pass), and it prints a classified cause. The usual real fix for Instagram/TikTok is a **logged-in session**: tell the user to set `WATCH_COOKIES_BROWSER=chrome` (or edge/firefox/brave — whichever browser they're signed into the platform on) in `~/.config/watch/.env`, or `WATCH_COOKIES_FILE=/path/to/cookies.txt`. yt-dlp then uses their own cookies locally (nothing is uploaded). If the error is an extractor/"unable to extract" failure, the fix is `yt-dlp -U`. Relay the printed cause and the matching fix; do not just retry blindly.
 - **OCR unavailable** → the report simply omits `on-screen:` text and the `On-screen text` header line. To enable it, `pip install rapidocr-onnxruntime` (or re-run `python3 "${SKILL_DIR}/scripts/setup.py"`, which adds it best-effort). Proceed with frames + transcript; you can still read large overlay text off the frames yourself.
 - **On-screen text looks garbled / partial** → OCR on 512px frames struggles with small or stylized type. Re-run with `--resolution 1024` (and optionally `--ocr-min-conf 0.6`) for a cleaner read, or just read the frame image directly.
 - **No audio profile** → the clip has no audio track, `--no-audio` was passed, or `--detail transcript` served from captions downloaded no media. The `## Audio` section says so; proceed without it.

@@ -78,11 +78,24 @@ def get_config() -> dict[str, object]:
     if stems not in STEMS_TOGGLES:
         stems = DEFAULT_STEMS
 
+    # Download-robustness settings (for sites that block/rate-limit/login-gate).
+    cookies_browser = (os.environ.get("WATCH_COOKIES_BROWSER")
+                       or file_values.get("WATCH_COOKIES_BROWSER") or "").strip()
+    cookies_file = (os.environ.get("WATCH_COOKIES_FILE")
+                    or file_values.get("WATCH_COOKIES_FILE") or "").strip()
+    impersonate = (os.environ.get("WATCH_IMPERSONATE")
+                   or file_values.get("WATCH_IMPERSONATE") or "on").strip().lower()
+    if impersonate not in ("on", "off"):
+        impersonate = "on"
+
     return {
         "detail": detail,
         "ocr": ocr,
         "audio": audio,
         "stems": stems,
+        "cookies_browser": cookies_browser,
+        "cookies_file": cookies_file,
+        "impersonate": impersonate,
         "config_file": str(CONFIG_FILE),
     }
 

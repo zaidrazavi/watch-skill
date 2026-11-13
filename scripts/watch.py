@@ -156,7 +156,7 @@ def build_report(source: str, args, config: dict, index: int = 0) -> dict:
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(source, work / "download")
+        dl = fetch_captions(source, work / "download", config=config)
         if dl.get("subtitle_path"):
             try:
                 transcript_segments = parse_vtt(dl["subtitle_path"])
@@ -176,10 +176,10 @@ def build_report(source: str, args, config: dict, index: int = 0) -> dict:
                 else "[watch] downloading video via yt-dlp…",
                 file=sys.stderr,
             )
-            dl = download(source, work / "download", audio_only=audio_only)
+            dl = download(source, work / "download", audio_only=audio_only, config=config)
         else:
             print("[watch] using local file…", file=sys.stderr)
-            dl = download(source, work / "download")
+            dl = download(source, work / "download", config=config)
         video_path = dl["video_path"]
 
     meta = get_metadata(video_path) if video_path else {
@@ -484,6 +484,19 @@ def print_markdown_report(r: dict, header_level: int = 1) -> None:
         pa = " — ".join(x for x in (info.get("track"), info.get("artist")) if x)
         print(f"- **Platform audio:** {pa} _(named by the post itself — free, no fingerprinting)_")
     print(f"- **Duration:** {format_time(r['full_duration'])} ({r['full_duration']:.1f}s)")
+    # Engagement signals (whatever the platform exposed) — real ad-research data.
+    eng = []
+    for label, key in (("views", "view_count"), ("likes", "like_count"),
+                       ("comments", "comment_count"), ("reposts", "repost_count")):
+        v = info.get(key)
+        if v is not None:
+            eng.append(f"{int(v):,} {label}")
+    if info.get("upload_date"):
+        d = str(info["upload_date"])
+        if len(d) == 8:
+            eng.append(f"posted {d[:4]}-{d[4:6]}-{d[6:]}")
+    if eng:
+        print(f"- **Engagement:** {' · '.join(eng)}")
     if focused:
         print(f"- **Focus range:** {format_time(r['effective_start'])} → {format_time(r['effective_end'])} "
               f"({r['effective_duration']:.1f}s)")
@@ -529,6 +542,19 @@ def print_markdown_report(r: dict, header_level: int = 1) -> None:
         print()
         print(f"> **Warning:** This is a {mins}-minute video. Frame coverage is sparse at this length "
               f"under `{detail}` detail. Re-run with `--start/--end` to zoom in, or `--detail token-burner`.")
+
+    # Post caption & hashtags (ad-research context from the post itself)
+    caption = (info.get("caption") or "").strip()
+    hashtags = info.get("hashtags") or []
+    if caption or hashtags:
+        print()
+        print("## Post caption & hashtags")
+        print()
+        if caption:
+            print("> " + caption.replace("\n", "\n> "))
+        if hashtags:
+            print()
+            print("**Hashtags:** " + " ".join(hashtags))
 
     # HOOK
     hook = r["hook"]
@@ -684,6 +710,11 @@ def _json_safe_report(r: dict) -> dict:
         "uploader": r["info"].get("uploader"),
         "platform_audio": {"track": r["info"].get("track"), "artist": r["info"].get("artist"),
                            "album": r["info"].get("album")},
+        "engagement": {k: r["info"].get(k) for k in
+                       ("view_count", "like_count", "comment_count", "repost_count",
+                        "upload_date", "channel_follower_count")},
+        "caption": r["info"].get("caption"),
+        "hashtags": r["info"].get("hashtags") or [],
         "detail": r["detail"],
         "duration_seconds": round(r["full_duration"], 2),
         "focused": r["focused"],

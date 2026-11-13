@@ -63,6 +63,22 @@ ENV_TEMPLATE = """# /watch configuration
 # Keep the value on its own line with no trailing comment.
 # WATCH_DETAIL=balanced
 
+# --- Download robustness (for links that won't open / get blocked) -----------
+# Browser TLS impersonation makes yt-dlp look like a real browser (needs the
+# curl_cffi package, usually bundled with yt-dlp). On by default; set off only to
+# debug. on | off
+# WATCH_IMPERSONATE=on
+#
+# Use your logged-in browser session for login-gated / rate-limited / private
+# posts. Set to the browser you are signed into the platform on:
+#   chrome | edge | firefox | brave | chromium | opera | vivaldi | safari
+# This reads that browser's cookies locally (nothing is uploaded); leave unset to
+# stay fully anonymous. This is the fix when a link reports "login required".
+# WATCH_COOKIES_BROWSER=chrome
+#
+# Or point at a cookies.txt file you exported instead of reading the browser:
+# WATCH_COOKIES_FILE=/path/to/cookies.txt
+
 # On-screen text OCR (reads burned-in captions/CTAs/prices from frames).
 # Needs the optional `rapidocr-onnxruntime` package (the installer adds it).
 # auto = on when the engine is installed and frames exist | on | off
