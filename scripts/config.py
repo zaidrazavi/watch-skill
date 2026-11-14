@@ -78,6 +78,11 @@ def get_config() -> dict[str, object]:
     if stems not in STEMS_TOGGLES:
         stems = DEFAULT_STEMS
 
+    voice_check = (os.environ.get("WATCH_VOICE_CHECK")
+                   or file_values.get("WATCH_VOICE_CHECK") or "off").lower()
+    if voice_check not in ("on", "off"):
+        voice_check = "off"
+
     # Download-robustness settings (for sites that block/rate-limit/login-gate).
     cookies_browser = (os.environ.get("WATCH_COOKIES_BROWSER")
                        or file_values.get("WATCH_COOKIES_BROWSER") or "").strip()

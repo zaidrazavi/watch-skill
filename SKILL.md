@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "0.7.0"
+version: "0.8.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or fully local faster-whisper transcription — no API key, no cost, with a largest→smallest model fallback), reads burned-in on-screen text with local OCR, profiles the audio (loudness, silence, speech/music mix), separates vocals from music and transcribes sung lyrics with local Demucs, builds a speech/music/singing/silence timeline, measures cut pacing, labels the opening 3-second ad hook, compares multiple videos side by side, and hands the result to Claude so it can answer questions about what's in the video. Everything runs locally and free.
 argument-hint: "<video-url-or-path> [more-urls…] [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -108,7 +108,7 @@ WATCH_DETAIL=balanced
 
 Use the user's selected value. If they skip the question, keep the recommended default. Once dependencies, the API-key choice, and this preference are handled, write or update `SETUP_COMPLETE=true` in the same file. Do not ask this preference question again when `SETUP_COMPLETE=true`.
 
-**Structured mode (optional):** `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, missing_packages, missing_optional_packages, missing_heavy_packages, has_faster_whisper, has_ocr, has_identify, has_precise_pacing, has_stems, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install`. `can_proceed` is the operational gate (all binaries present AND faster-whisper importable). `has_ocr`, `has_identify`, `has_precise_pacing`, and `has_stems` report whether the optional OCR engine, the music identifier, the PySceneDetect precise-pacing engine, and the optional (heavy) Demucs stem-separation engine are installed — none is part of `can_proceed`, since /watch runs fine without them. Branch on `can_proceed`/`first_run` to decide whether to run and whether to walk first-run setup.
+**Structured mode (optional):** `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, missing_packages, missing_optional_packages, missing_heavy_packages, has_faster_whisper, has_ocr, has_identify, has_precise_pacing, has_voice_acoustics, has_stems, has_ai_voice_detector, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install`. `can_proceed` is the operational gate (all binaries present AND faster-whisper importable). `has_ocr`, `has_identify`, `has_precise_pacing`, and `has_stems` report whether the optional OCR engine, the music identifier, the PySceneDetect precise-pacing engine, and the optional (heavy) Demucs stem-separation engine are installed — none is part of `can_proceed`, since /watch runs fine without them. Branch on `can_proceed`/`first_run` to decide whether to run and whether to walk first-run setup.
 
 **Whisper model quality (optional):** the local model size is set by `WHISPER_MODEL` in `~/.config/watch/.env` (`tiny | base | small | medium | large-v3`). It defaults to `medium` on CPU / `large-v3` on GPU, which is a good balance for ad research — you do **not** need to ask the user about it during setup. If a teammate wants faster (lower accuracy) or maximum accuracy, they can set `WHISPER_MODEL=` themselves, or you can pass `--whisper-model` for a single run.
 
@@ -170,6 +170,7 @@ Optional flags:
 - `--stems` / `--no-stems` — separate audio into vocals + music tracks with Demucs (local). **Off by default** (heavy: needs `pip install demucs`, pulls torch, one-time model download; slow on CPU). Sharpens the timeline and enables lyric transcription. Pin with `WATCH_STEMS=on`.
 - `--lyrics` — transcribe the isolated vocal stem for sung lyrics (**implies `--stems`**). Adds a `## Lyrics / vocals` section. Best for music-led content where the normal transcript comes back empty or music-garbled.
 - `--no-timeline` — skip the speech/music/singing/silence timeline (it's on by default whenever audio is analyzed).
+- `--voice-check` — analyze the **voice** itself: AI-generated likelihood (a wav2vec2 synthetic-speech detector), acoustics (pitch, jitter, shimmer, HNR via Praat), and a warmth/tone proxy. **Local.** Use it for "is this voice AI?", "does it sound warm / natural / smooth?", voice-quality QC. Runs on the **isolated vocal stem** when `--stems` is also set — strongly recommended, because music in the mix wrecks the acoustics and the AI score. `--no-voice-ai` keeps warmth + acoustics but skips the heavy AI detector.
 - `--identify` — identify the music/track (Shazam-style). **Opt-in and the only non-local step:** it sends a short audio fingerprint to an external service, so use it **only when the user's question is about the music or the sound** (e.g. "what song is this?", "what's the audio?", "is this a trending sound?"). Prefers the isolated music stem when `--stems` is also set (much better match rate — a voiceover over the song confuses the raw mix).
 - `--json` — emit the whole analysis as structured JSON to stdout **instead of** the markdown report (use when another tool/skill will consume it).
 - `--report-json PATH` — also write the structured JSON to a file while still printing the markdown report.
@@ -211,6 +212,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 - **On-screen text (OCR)** — the words burned into each frame (captions, CTAs, prices, product names), shown inline on each frame line as `on-screen: "…"`. Trust this for exact wording of overlays you can't read at 512px; it is often the single most useful stream for ad research (it captures the offer, the price, the CTA).
 - **Transcript** — what's said at each timestamp. The report's header shows the source (`captions` = yt-dlp pulled native subs; `faster-whisper <model> (cpu|cuda)` = transcribed locally).
 - **Audio** (`## Audio`) — loudness, silence, and the speech/music content mix, including whether the hook is voice-led or music/sfx and how much louder it is than the rest.
+- **Voice check** (`## Voice check`, only with `--voice-check`) — AI-generated likelihood, voice acoustics (pitch/jitter/shimmer/HNR), and a warmth proxy. Lead with these for "is this AI / does it sound right" questions, but frame them as measurements that flag clips for a human listen, never as a final verdict.
 - **Pacing** (`## Pacing`) — cuts, cuts/sec with a pace label, average shot length, and cuts inside the hook. Fast cutting in the hook is a deliberate retention tactic; call it out.
 - **Hook** — the report calls out the first 3 seconds in a dedicated `## HOOK` section with word-level timing, on-screen text, hook audio, hook cut count, and the frame(s) in that window. For ad research, lead your answer with the hook: what's said, shown, written on screen, and heard in the opening scroll-stopping moment.
 
@@ -310,6 +312,19 @@ What stems do **not** do: they don't *name* the song — that's what `--identify
 
 Bottom line for the user: there is no way to name *every* royalty-free track offline (the catalog is the moat), but Platform audio + ACRCloud cover most real cases, and a self-indexed library covers your own.
 
+## Voice check (`--voice-check`) — AI likelihood, acoustics, warmth
+
+Claude can't *hear* a voice, but a voice's realness, smoothness, and "warmth" leave **measurable acoustic fingerprints**, so `--voice-check` reports them (all local, in a `## Voice check` section). This is the answer to "is this voice AI?", "does it sound warm / natural?", and voice-quality QC.
+
+- **AI-voice likelihood** — a wav2vec2 synthetic-speech detector gives a 0–100% probability the voice is AI-generated, with a label (`likely real` / `uncertain` / `likely AI-generated`). Needs `transformers` (+ torch) and a one-time model download; **heavy, not auto-installed** (`setup.py --json` → `has_ai_voice_detector`). `--no-voice-ai` skips just this part.
+- **Voice acoustics** — Praat (via `parselmouth`, light pip install, `has_voice_acoustics`): mean pitch (F0), jitter, shimmer, and **HNR** (harmonics-to-noise). High HNR + low jitter/shimmer = a clear, stable, smooth voice; the opposite = rough/raspy/robotic.
+- **Warmth / tone proxy** — ffmpeg spectral stats (no deps): spectral centroid, rolloff, flatness. Low centroid + low flatness = warm, low-mid, tonal; high centroid = bright/harsh. A measurable *proxy* for the feeling of warmth.
+
+**Read these honestly, and say so to the user:**
+- They are **measurements, not perception.** They do **not** replace a human ear's judgment of whether a voice "feels" warm, human, or off — present them as signals to *flag clips worth a listen*, not a verdict.
+- **Always pair with `--stems`.** Music/sfx in the mix drags HNR down and skews the AI score; run voice-check on the isolated vocal stem for meaningful numbers. On a music-only clip (little/no speech) the voice metrics are noise — check the `## Audio` content mix first, and if it's mostly music, say the voice check isn't applicable.
+- **The AI detector is a single model, not calibrated to the user's speakers.** It's indicative, not proof. For a serious workflow, calibrate it against known-real recordings first (establish the real-voice score range), and treat a high score as "worth a human listen", not "confirmed AI".
+
 ## Speech / music / singing / silence timeline
 
 A `## Timeline` section labels every second of the clip and merges runs into segments, e.g. `[00:00–00:05] music` → `[00:05–00:19] speech`. It has two fidelities:
@@ -389,6 +404,6 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
 - Does not persist anything outside the working directory, `~/.config/watch/.env`, and the one-time Hugging Face model cache — clean up the working directory when you're done (Step 5)
 
-**Bundled scripts:** `scripts/watch.py` (entry point / orchestration / rendering), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction + scene/keyframe/dedup), `scripts/transcribe.py` (caption parsing + transcript formatting), `scripts/local_whisper.py` (fully local faster-whisper transcription with model cascade), `scripts/ocr.py` (local on-screen text OCR), `scripts/audio.py` (ffmpeg audio intelligence), `scripts/stems.py` (local Demucs vocal/music separation), `scripts/timeline.py` (speech/music/singing timeline), `scripts/scenes.py` (precise PySceneDetect cut/transition detection), `scripts/identify.py` (opt-in music ID via Shazam/ACRCloud — the only non-local script), `scripts/metrics.py` (cut/pacing metrics), `scripts/config.py` (shared config), `scripts/setup.py` (preflight + installer)
+**Bundled scripts:** `scripts/watch.py` (entry point / orchestration / rendering), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction + scene/keyframe/dedup), `scripts/transcribe.py` (caption parsing + transcript formatting), `scripts/local_whisper.py` (fully local faster-whisper transcription with model cascade), `scripts/ocr.py` (local on-screen text OCR), `scripts/audio.py` (ffmpeg audio intelligence), `scripts/stems.py` (local Demucs vocal/music separation), `scripts/timeline.py` (speech/music/singing timeline), `scripts/scenes.py` (precise PySceneDetect cut/transition detection), `scripts/identify.py` (opt-in music ID via Shazam/ACRCloud — the only non-local script), `scripts/voicecheck.py` (AI-voice likelihood + acoustics + warmth), `scripts/metrics.py` (cut/pacing metrics), `scripts/config.py` (shared config), `scripts/setup.py` (preflight + installer)
 
 Review scripts before first use to verify behavior.

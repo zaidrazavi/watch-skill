@@ -40,6 +40,7 @@ from identify import identify_track, format_identify_report  # noqa: E402
 import ocr as ocr_mod  # noqa: E402
 import stems as stems_mod  # noqa: E402
 import scenes as scenes_mod  # noqa: E402
+import voicecheck as voicecheck_mod  # noqa: E402
 
 
 HOOK_SECONDS = 3.0
@@ -117,6 +118,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "this sends a short audio fingerprint to an external service, so it "
                          "runs ONLY with this flag — use it when the question is about the "
                          "music or sound. Uses the isolated music stem when stems are available.")
+    ap.add_argument("--voice-check", dest="voice_check", action="store_true",
+                    help="Analyze the VOICE: AI-generated likelihood (wav2vec2 detector), "
+                         "acoustics (pitch/jitter/shimmer/HNR via Praat), and a warmth/tone proxy. "
+                         "Local. Runs on the isolated vocal stem when --stems is set (much cleaner). "
+                         "Use when the question is about voice quality / is-it-AI / does-it-sound-right.")
+    ap.add_argument("--no-voice-ai", dest="voice_ai", action="store_false", default=True,
+                    help="With --voice-check, skip the heavy AI-voice detector (keep warmth + acoustics only).")
     ap.add_argument("--report-json", type=str, default=None,
                     help="Write the structured report as JSON to this path (markdown still prints).")
     ap.add_argument("--json", dest="json_stdout", action="store_true",
@@ -374,6 +382,18 @@ def build_report(source: str, args, config: dict, index: int = 0) -> dict:
               "to an external service)…", file=sys.stderr)
         identify_result = identify_track(id_src)
 
+    # --- Voice check: AI-likelihood + acoustics + warmth (OPT-IN) ------------
+    voicecheck_result: dict | None = None
+    voice_check_wanted = args.voice_check or str(config.get("voice_check", "off")) == "on"
+    if voice_check_wanted and audio_src:
+        # The isolated vocal stem gives much cleaner acoustics/AI signal (no music).
+        vc_src = stem_result.get("vocals") if stem_result and stem_result.get("vocals") else str(audio_src)
+        run_ai = getattr(args, "voice_ai", True)
+        print(f"[watch] voice check (warmth / acoustics{' / AI-likelihood' if run_ai else ''}) "
+              f"on {'vocal stem' if stem_result else 'mixed audio'}…", file=sys.stderr)
+        voicecheck_result = voicecheck_mod.voice_check(vc_src, run_ai=run_ai)
+        voicecheck_result["source"] = "vocal stem" if stem_result else "mixed audio"
+
     # --- Pacing / cut metrics -------------------------------------------------
     # Prefer PySceneDetect for EXACT cuts + gradual transitions; fall back to the
     # frame engine's cut data when it isn't installed.
@@ -448,6 +468,7 @@ def build_report(source: str, args, config: dict, index: int = 0) -> dict:
         "lyrics_text": format_transcript(lyrics_segments) if lyrics_segments else None,
         "timeline": timeline_result,
         "identify": identify_result,
+        "voicecheck": voicecheck_result,
         "ocr_summary": ocr_summary,
         "subtitle_path": dl.get("subtitle_path"),
         "work": str(work),
@@ -627,6 +648,16 @@ def print_markdown_report(r: dict, header_level: int = 1) -> None:
         print()
         print(format_identify_report(r["identify"]))
 
+    # Voice check (only present when --voice-check was used)
+    if r.get("voicecheck") is not None:
+        print()
+        print("## Voice check")
+        print()
+        print(f"_Measured on the {r['voicecheck'].get('source', 'audio')}. "
+              "These are acoustic signals, not a human judgment of how the voice feels._")
+        print()
+        print(voicecheck_mod.format_voicecheck_report(r["voicecheck"]))
+
     # Timeline
     if r.get("timeline", {}).get("available"):
         print()
@@ -691,6 +722,16 @@ def print_markdown_report(r: dict, header_level: int = 1) -> None:
     print(f"_Work dir: `{r['work']}` — delete when done._")
 
 
+def _voicecheck_json(vc: dict | None) -> dict | None:
+    """Trim the voice-check dict for JSON (drop the bulky raw model output)."""
+    if not vc:
+        return None
+    out = {k: v for k, v in vc.items()}
+    if isinstance(out.get("ai"), dict):
+        out["ai"] = {k: v for k, v in out["ai"].items() if k != "raw"}
+    return out
+
+
 def _json_safe_report(r: dict) -> dict:
     """Trim a report dict to a clean, serializable shape for JSON output."""
     def frame_json(f: dict) -> dict:
@@ -737,6 +778,7 @@ def _json_safe_report(r: dict) -> dict:
         "stems": r.get("stems"),
         "timeline": r.get("timeline"),
         "identify": r.get("identify"),
+        "voicecheck": _voicecheck_json(r.get("voicecheck")),
         "lyrics_source": r.get("lyrics_source"),
         "lyrics_segments": r.get("lyrics_segments", []),
         "ocr_summary": r["ocr_summary"],

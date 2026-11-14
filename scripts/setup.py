@@ -40,10 +40,12 @@ REQUIRED_PACKAGES = ["faster_whisper"]  # importable module name
 #   shazamio             — music/track identification (OPT-IN at runtime; only the
 #                          `--identify` flag ever sends audio off-machine)
 #   scenedetect          — precise cut/transition detection for pacing (PySceneDetect)
-OPTIONAL_PACKAGES = ["rapidocr_onnxruntime", "shazamio", "scenedetect"]
+#   parselmouth          — Praat voice acoustics (pitch/jitter/shimmer/HNR) for --voice-check
+OPTIONAL_PACKAGES = ["rapidocr_onnxruntime", "shazamio", "scenedetect", "parselmouth"]
 # Optional *heavy* features (not auto-installed — they pull a large dependency).
-# Stem separation / lyric transcription / fine timeline need Demucs (+ torch).
-OPTIONAL_HEAVY_PACKAGES = ["demucs"]
+#   demucs       — stem separation / lyric transcription / fine timeline (+ torch)
+#   transformers — the AI-voice detector for --voice-check (+ torch/soundfile/librosa)
+OPTIONAL_HEAVY_PACKAGES = ["demucs", "transformers"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 ENV_TEMPLATE = """# /watch configuration
@@ -93,6 +95,13 @@ ENV_TEMPLATE = """# /watch configuration
 # and a one-time model download; slow on CPU, fast on GPU. Off unless turned on.
 # on | off   (or use --stems / --lyrics per run)
 # WATCH_STEMS=off
+
+# Voice check: AI-generated likelihood (wav2vec2 detector — needs `pip install
+# transformers`, heavy), voice acoustics (pitch/jitter/shimmer/HNR — needs
+# `pip install praat-parselmouth`, light), and a warmth/tone proxy (ffmpeg only).
+# Best paired with --stems so it runs on the isolated voice. on | off (or
+# --voice-check / --no-voice-ai per run).
+# WATCH_VOICE_CHECK=off
 
 # Optional: ACRCloud music recognition (used by --identify when set). Broader
 # catalog than Shazam — covers more royalty-free/library music, and you can match
@@ -280,6 +289,7 @@ def _install_packages(missing: list[str]) -> tuple[bool, str]:
         "rapidocr_onnxruntime": "rapidocr-onnxruntime",
         "shazamio": "shazamio",
         "scenedetect": "scenedetect[opencv]",
+        "parselmouth": "praat-parselmouth",
     }
     dists = [pypi_names.get(m, m) for m in missing]
     if not dists:
@@ -327,7 +337,9 @@ def _status() -> dict:
         "has_ocr": "rapidocr_onnxruntime" not in missing_optional,
         "has_identify": "shazamio" not in missing_optional,
         "has_precise_pacing": "scenedetect" not in missing_optional,
+        "has_voice_acoustics": "parselmouth" not in missing_optional,
         "has_stems": "demucs" not in missing_heavy,
+        "has_ai_voice_detector": "transformers" not in missing_heavy,
         "config_file": str(CONFIG_FILE),
         "watch_detail": cfg["detail"],
         "platform": platform.system(),
