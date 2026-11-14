@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "0.9.0"
+version: "0.9.1"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or fully local faster-whisper transcription — no API key, no cost, with a largest→smallest model fallback), reads burned-in on-screen text with local OCR, profiles the audio (loudness, silence, speech/music mix), separates vocals from music and transcribes sung lyrics with local Demucs, builds a speech/music/singing/silence timeline, measures cut pacing, labels the opening 3-second ad hook, compares multiple videos side by side, and hands the result to Claude so it can answer questions about what's in the video. Everything runs locally and free.
 argument-hint: "<video-url-or-path> [more-urls…] [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -320,20 +320,21 @@ Claude can't *hear* a voice, but a voice's realness, smoothness, and "warmth" le
 - **Voice acoustics** — Praat (via `parselmouth`, light pip install, `has_voice_acoustics`): mean pitch (F0), jitter, shimmer, and **HNR** (harmonics-to-noise). High HNR + low jitter/shimmer = a clear, stable, smooth voice; the opposite = rough/raspy/robotic.
 - **Warmth / tone proxy** — ffmpeg spectral stats (no deps): spectral centroid, rolloff, flatness. Low centroid + low flatness = warm, low-mid, tonal; high centroid = bright/harsh. A measurable *proxy* for the feeling of warmth.
 
-The report **leads with a straight verdict** — `REAL / HUMAN VOICE` or `AI-GENERATED VOICE` with a confidence % and the AI score. **Give the user that verdict and the numbers as the answer** — report the data plainly, don't hedge about "not being able to hear." The measurements are the deliverable.
+**It works out of the box — no training, no setup from the user.** The AI-voice detector is a **pretrained** model; it scores real-vs-AI immediately. The report **leads with a straight verdict** — `REAL / HUMAN VOICE` or `AI-GENERATED VOICE` with a confidence % and the AI score. **Give the user that verdict and the numbers as the answer** — report the data plainly, no hedging about "not being able to hear." The measurement is the deliverable.
 
-**Make the verdict reliable with calibration (`voicebatch.py`) — do this once:**
+`--voice-check` **automatically runs on the isolated vocal stem** (it turns on Demucs for you when available) so the detector scores the *voice*, not the background music — that's what makes the out-of-box score trustworthy. You don't need `--stems` separately.
+
+**Ensemble (optional):** set `WATCH_AI_VOICE_MODELS` to a comma-separated list of Hugging Face audio-classification model IDs to average several pretrained detectors for robustness; the default is one reliable wav2vec2 model. Still zero training.
+
+**Calibration is an OPTIONAL refinement, not a requirement — do not push it as needed.** The verdict already works without it. If a user *wants* to tune the threshold to their own voices for maximum accuracy, `voicebatch.py` can learn it from a folder of their known-real clips, but the tool is fully usable without ever doing this:
 ```bash
-# 1. Learn what the user's REAL voices score (and optionally known-AI ones):
-python3 "${SKILL_DIR}/scripts/voicebatch.py" calibrate <folder-of-real-reels> [--ai <folder-of-ai-clips>]
-# 2. Scan any folder of videos — each gets a REAL/AI verdict, flagged in a table + CSV:
+# Scan a whole folder — each file gets a REAL/AI verdict in a table + CSV (works with zero setup):
 python3 "${SKILL_DIR}/scripts/voicebatch.py" scan <folder> --csv results.csv
+# Optional one-time tuning to the user's own voices (only if they ask for higher accuracy):
+python3 "${SKILL_DIR}/scripts/voicebatch.py" calibrate <folder-of-real-reels> [--ai <folder-of-ai-clips>]
 ```
-Calibration saves a threshold tuned to the user's own voices to `~/.config/watch/voice_calibration.json`; after that, **every** `--voice-check` (and every scan) returns a calibrated, confident verdict automatically. Providing a few known-AI clips too (`--ai`) gives the sharpest threshold. Each file is scored on its isolated vocal stem by default (`--no-stems` for a faster, rawer pass).
 
-**Operating notes (apply them, don't narrate them):**
-- Score the **voice**, not music: voice-check runs on the vocal stem when `--stems` is set, which is what you want. If the `## Audio` content mix shows a clip is mostly music with little speech, the voice metrics don't apply — say which clips actually have a voiceover.
-- Before calibration the verdict uses a default threshold (still reported, marked "default"); after calibration it's tuned to the user's voices. Push the user to calibrate once on their real reels so the verdicts are trustworthy for their content.
+**Operating note:** if the `## Audio` content mix shows a clip is mostly music with little/no speech, there's no voice to score — say which clips actually have a voiceover rather than reporting a meaningless verdict.
 
 ## Speech / music / singing / silence timeline
 

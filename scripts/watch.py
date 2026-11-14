@@ -119,10 +119,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "runs ONLY with this flag — use it when the question is about the "
                          "music or sound. Uses the isolated music stem when stems are available.")
     ap.add_argument("--voice-check", dest="voice_check", action="store_true",
-                    help="Analyze the VOICE: AI-generated likelihood (wav2vec2 detector), "
-                         "acoustics (pitch/jitter/shimmer/HNR via Praat), and a warmth/tone proxy. "
-                         "Local. Runs on the isolated vocal stem when --stems is set (much cleaner). "
-                         "Use when the question is about voice quality / is-it-AI / does-it-sound-right.")
+                    help="Analyze the VOICE with pretrained tools (no training): AI-generated "
+                         "verdict (wav2vec2 detector), acoustics (pitch/jitter/shimmer/HNR via Praat), "
+                         "and a warmth/tone proxy. Local. Auto-runs on the isolated vocal stem "
+                         "(enables Demucs) so it scores the voice, not the music.")
     ap.add_argument("--no-voice-ai", dest="voice_ai", action="store_false", default=True,
                     help="With --voice-check, skip the heavy AI-voice detector (keep warmth + acoustics only).")
     ap.add_argument("--report-json", type=str, default=None,
@@ -317,6 +317,12 @@ def build_report(source: str, args, config: dict, index: int = 0) -> dict:
     if stems_wanted is None:
         stems_wanted = str(config.get("stems", "off")) == "on"
     if args.lyrics:
+        stems_wanted = True
+    # Voice check scores the VOICE, so it must run on the isolated vocal stem (not
+    # the music). Turn stem separation on automatically whenever a voice check is
+    # requested and Demucs is available — the user never has to think about it.
+    _vc_wanted = args.voice_check or str(config.get("voice_check", "off")) == "on"
+    if _vc_wanted and args.stems is not False and stems_mod.stems_available():
         stems_wanted = True
 
     audio_dur = effective_duration if focused else full_duration

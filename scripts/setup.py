@@ -99,9 +99,14 @@ ENV_TEMPLATE = """# /watch configuration
 # Voice check: AI-generated likelihood (wav2vec2 detector — needs `pip install
 # transformers`, heavy), voice acoustics (pitch/jitter/shimmer/HNR — needs
 # `pip install praat-parselmouth`, light), and a warmth/tone proxy (ffmpeg only).
-# Best paired with --stems so it runs on the isolated voice. on | off (or
-# --voice-check / --no-voice-ai per run).
+# Works out of the box (pretrained detector, no training); --voice-check auto-runs
+# it on the isolated voice. on | off (or --voice-check / --no-voice-ai per run).
 # WATCH_VOICE_CHECK=off
+#
+# Optional: average several PRETRAINED AI-voice detectors for robustness — a
+# comma-separated list of Hugging Face audio-classification model IDs. Default is
+# one reliable model. No training either way.
+# WATCH_AI_VOICE_MODELS=MelodyMachine/Deepfake-audio-detection-V2
 
 # Optional: ACRCloud music recognition (used by --identify when set). Broader
 # catalog than Shazam — covers more royalty-free/library music, and you can match

@@ -157,8 +157,13 @@ def voice_acoustics(audio_path: str) -> dict:
     return result
 
 
+# Pretrained synthetic-speech detectors. These are OFF-THE-SHELF models — they
+# score real-vs-AI out of the box with no training from the user. Add more IDs to
+# the ensemble (comma-separated) via WATCH_AI_VOICE_MODELS to average several
+# detectors for robustness; the default is a single reliable wav2vec2 model.
 _AI_MODEL = "MelodyMachine/Deepfake-audio-detection-V2"
-_ai_pipe = None
+_DEFAULT_AI_MODELS = [_AI_MODEL]
+_ai_pipes: dict = {}
 
 
 def ai_detect_available() -> bool:
@@ -170,42 +175,75 @@ def ai_detect_available() -> bool:
         return False
 
 
-def ai_voice_score(audio_path: str, model: str = _AI_MODEL) -> dict:
-    """Probability the voice is AI-generated, via a wav2vec2 detector. Fail-open."""
-    global _ai_pipe
-    result = {"available": False, "ai_probability": None, "label": None, "model": model}
-    if not ai_detect_available():
-        return result
-    try:
-        if _ai_pipe is None:
-            from transformers import pipeline
-            _ai_pipe = pipeline("audio-classification", model=model)
-        out = _ai_pipe(str(Path(audio_path).resolve()))
-    except Exception as exc:
-        result["error"] = f"{type(exc).__name__}: {exc}"
-        return result
-    # Normalize: find the probability mass on the "fake/AI/spoof" class.
-    ai_prob = None
+def _configured_models() -> list[str]:
+    import os
+    env = os.environ.get("WATCH_AI_VOICE_MODELS")
+    if not env:
+        try:
+            from config import read_env_file
+            env = read_env_file().get("WATCH_AI_VOICE_MODELS")
+        except Exception:
+            env = None
+    if env:
+        models = [m.strip() for m in env.split(",") if m.strip()]
+        if models:
+            return models
+    return _DEFAULT_AI_MODELS
+
+
+def _extract_ai_prob(out: list) -> float | None:
+    """Pull the P(AI) mass from an audio-classification result."""
     for item in out or []:
         lab = str(item.get("label", "")).lower()
         if any(k in lab for k in ("fake", "spoof", "ai", "synthetic", "deepfake", "generated")):
-            ai_prob = float(item.get("score", 0.0))
-            break
-    if ai_prob is None and out:
-        # Fall back: assume a binary real/fake head; 1 - top "real" score.
-        real = next((float(i["score"]) for i in out
-                     if any(k in str(i.get("label", "")).lower() for k in ("real", "human", "bonafide", "genuine"))), None)
-        ai_prob = round(1 - real, 3) if real is not None else None
-    if ai_prob is None:
+            return float(item.get("score", 0.0))
+    # Binary real/fake head → 1 - P(real).
+    real = next((float(i["score"]) for i in (out or [])
+                 if any(k in str(i.get("label", "")).lower()
+                        for k in ("real", "human", "bonafide", "genuine"))), None)
+    return (1 - real) if real is not None else None
+
+
+def _score_one_model(audio_path: str, model: str) -> float | None:
+    pipe = _ai_pipes.get(model)
+    if pipe is None:
+        from transformers import pipeline
+        pipe = pipeline("audio-classification", model=model)
+        _ai_pipes[model] = pipe
+    return _extract_ai_prob(pipe(str(Path(audio_path).resolve())))
+
+
+def ai_voice_score(audio_path: str, models: list[str] | None = None) -> dict:
+    """Probability the voice is AI-generated, from one or more PRETRAINED detectors
+    (averaged). Out of the box, no training. Fail-open."""
+    result = {"available": False, "ai_probability": None, "label": None, "models": []}
+    if not ai_detect_available():
         return result
-    ai_prob = round(ai_prob, 3)
+    models = models or _configured_models()
+    per_model: dict = {}
+    probs: list[float] = []
+    for m in models:
+        try:
+            p = _score_one_model(audio_path, m)
+        except Exception as exc:
+            per_model[m] = {"error": f"{type(exc).__name__}: {exc}"}
+            continue
+        if p is not None:
+            per_model[m] = {"ai_probability": round(p, 3)}
+            probs.append(p)
+    if not probs:
+        result["per_model"] = per_model
+        return result
+    ai_prob = round(sum(probs) / len(probs), 3)  # ensemble average
     if ai_prob >= 0.6:
         label = "likely AI-generated"
-    elif ai_prob >= 0.35:
-        label = "uncertain (possible AI artifacts)"
+    elif ai_prob >= 0.4:
+        label = "uncertain"
     else:
-        label = "likely real / human-recorded"
-    result.update({"available": True, "ai_probability": ai_prob, "label": label, "raw": out})
+        label = "likely real / human"
+    result.update({"available": True, "ai_probability": ai_prob, "label": label,
+                   "models": [m for m in models if m in per_model and "ai_probability" in per_model[m]],
+                   "n_models": len(probs), "per_model": per_model})
     return result
 
 
@@ -229,15 +267,17 @@ def format_voicecheck_report(vc: dict) -> str:
     v = vc.get("verdict") or {}
     ai = vc.get("ai") or {}
 
-    # Lead with a straight verdict — the data IS the answer.
+    # Lead with a straight verdict — the pretrained detector IS the answer.
     if v.get("verdict") in ("AI", "HUMAN"):
-        cal = "calibrated to your voices" if v.get("calibrated") else "default threshold — calibrate for best accuracy"
+        src = "tuned to your voices" if v.get("calibrated") else "pretrained detector"
         conf = v.get("confidence_pct")
         conf_txt = f" · {conf:.0f}% confidence" if conf is not None else ""
         verdict_word = "AI-GENERATED VOICE" if v["verdict"] == "AI" else "REAL / HUMAN VOICE"
-        lines.append(f"- **Verdict: {verdict_word}**{conf_txt}  _({cal})_")
+        lines.append(f"- **Verdict: {verdict_word}**{conf_txt}  _({src})_")
     if ai.get("available"):
-        lines.append(f"- **AI score:** {ai['ai_probability']:.2f} "
+        n = ai.get("n_models", 1)
+        ens = f" (avg of {n} detectors)" if n and n > 1 else ""
+        lines.append(f"- **AI score:** {ai['ai_probability']:.2f}{ens} "
                      f"(0 = human, 1 = AI; threshold {v.get('threshold', 0.5)})")
     elif not ai.get("skipped"):
         lines.append("- **AI score:** detector not installed (`pip install transformers`).")
