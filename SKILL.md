@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "0.8.0"
+version: "0.9.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or fully local faster-whisper transcription — no API key, no cost, with a largest→smallest model fallback), reads burned-in on-screen text with local OCR, profiles the audio (loudness, silence, speech/music mix), separates vocals from music and transcribes sung lyrics with local Demucs, builds a speech/music/singing/silence timeline, measures cut pacing, labels the opening 3-second ad hook, compares multiple videos side by side, and hands the result to Claude so it can answer questions about what's in the video. Everything runs locally and free.
 argument-hint: "<video-url-or-path> [more-urls…] [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -212,7 +212,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 - **On-screen text (OCR)** — the words burned into each frame (captions, CTAs, prices, product names), shown inline on each frame line as `on-screen: "…"`. Trust this for exact wording of overlays you can't read at 512px; it is often the single most useful stream for ad research (it captures the offer, the price, the CTA).
 - **Transcript** — what's said at each timestamp. The report's header shows the source (`captions` = yt-dlp pulled native subs; `faster-whisper <model> (cpu|cuda)` = transcribed locally).
 - **Audio** (`## Audio`) — loudness, silence, and the speech/music content mix, including whether the hook is voice-led or music/sfx and how much louder it is than the rest.
-- **Voice check** (`## Voice check`, only with `--voice-check`) — AI-generated likelihood, voice acoustics (pitch/jitter/shimmer/HNR), and a warmth proxy. Lead with these for "is this AI / does it sound right" questions, but frame them as measurements that flag clips for a human listen, never as a final verdict.
+- **Voice check** (`## Voice check`, only with `--voice-check`) — a straight **REAL / AI verdict** with confidence, plus the AI score, voice acoustics (pitch/jitter/shimmer/HNR), and a warmth read. For "is this AI / does it sound right" questions, give the user the verdict and the numbers directly. Calibrate once with `voicebatch.py` on their real reels to make the verdict reliable for their content.
 - **Pacing** (`## Pacing`) — cuts, cuts/sec with a pace label, average shot length, and cuts inside the hook. Fast cutting in the hook is a deliberate retention tactic; call it out.
 - **Hook** — the report calls out the first 3 seconds in a dedicated `## HOOK` section with word-level timing, on-screen text, hook audio, hook cut count, and the frame(s) in that window. For ad research, lead your answer with the hook: what's said, shown, written on screen, and heard in the opening scroll-stopping moment.
 
@@ -320,10 +320,20 @@ Claude can't *hear* a voice, but a voice's realness, smoothness, and "warmth" le
 - **Voice acoustics** — Praat (via `parselmouth`, light pip install, `has_voice_acoustics`): mean pitch (F0), jitter, shimmer, and **HNR** (harmonics-to-noise). High HNR + low jitter/shimmer = a clear, stable, smooth voice; the opposite = rough/raspy/robotic.
 - **Warmth / tone proxy** — ffmpeg spectral stats (no deps): spectral centroid, rolloff, flatness. Low centroid + low flatness = warm, low-mid, tonal; high centroid = bright/harsh. A measurable *proxy* for the feeling of warmth.
 
-**Read these honestly, and say so to the user:**
-- They are **measurements, not perception.** They do **not** replace a human ear's judgment of whether a voice "feels" warm, human, or off — present them as signals to *flag clips worth a listen*, not a verdict.
-- **Always pair with `--stems`.** Music/sfx in the mix drags HNR down and skews the AI score; run voice-check on the isolated vocal stem for meaningful numbers. On a music-only clip (little/no speech) the voice metrics are noise — check the `## Audio` content mix first, and if it's mostly music, say the voice check isn't applicable.
-- **The AI detector is a single model, not calibrated to the user's speakers.** It's indicative, not proof. For a serious workflow, calibrate it against known-real recordings first (establish the real-voice score range), and treat a high score as "worth a human listen", not "confirmed AI".
+The report **leads with a straight verdict** — `REAL / HUMAN VOICE` or `AI-GENERATED VOICE` with a confidence % and the AI score. **Give the user that verdict and the numbers as the answer** — report the data plainly, don't hedge about "not being able to hear." The measurements are the deliverable.
+
+**Make the verdict reliable with calibration (`voicebatch.py`) — do this once:**
+```bash
+# 1. Learn what the user's REAL voices score (and optionally known-AI ones):
+python3 "${SKILL_DIR}/scripts/voicebatch.py" calibrate <folder-of-real-reels> [--ai <folder-of-ai-clips>]
+# 2. Scan any folder of videos — each gets a REAL/AI verdict, flagged in a table + CSV:
+python3 "${SKILL_DIR}/scripts/voicebatch.py" scan <folder> --csv results.csv
+```
+Calibration saves a threshold tuned to the user's own voices to `~/.config/watch/voice_calibration.json`; after that, **every** `--voice-check` (and every scan) returns a calibrated, confident verdict automatically. Providing a few known-AI clips too (`--ai`) gives the sharpest threshold. Each file is scored on its isolated vocal stem by default (`--no-stems` for a faster, rawer pass).
+
+**Operating notes (apply them, don't narrate them):**
+- Score the **voice**, not music: voice-check runs on the vocal stem when `--stems` is set, which is what you want. If the `## Audio` content mix shows a clip is mostly music with little speech, the voice metrics don't apply — say which clips actually have a voiceover.
+- Before calibration the verdict uses a default threshold (still reported, marked "default"); after calibration it's tuned to the user's voices. Push the user to calibrate once on their real reels so the verdicts are trustworthy for their content.
 
 ## Speech / music / singing / silence timeline
 
@@ -404,6 +414,6 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
 - Does not persist anything outside the working directory, `~/.config/watch/.env`, and the one-time Hugging Face model cache — clean up the working directory when you're done (Step 5)
 
-**Bundled scripts:** `scripts/watch.py` (entry point / orchestration / rendering), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction + scene/keyframe/dedup), `scripts/transcribe.py` (caption parsing + transcript formatting), `scripts/local_whisper.py` (fully local faster-whisper transcription with model cascade), `scripts/ocr.py` (local on-screen text OCR), `scripts/audio.py` (ffmpeg audio intelligence), `scripts/stems.py` (local Demucs vocal/music separation), `scripts/timeline.py` (speech/music/singing timeline), `scripts/scenes.py` (precise PySceneDetect cut/transition detection), `scripts/identify.py` (opt-in music ID via Shazam/ACRCloud — the only non-local script), `scripts/voicecheck.py` (AI-voice likelihood + acoustics + warmth), `scripts/metrics.py` (cut/pacing metrics), `scripts/config.py` (shared config), `scripts/setup.py` (preflight + installer)
+**Bundled scripts:** `scripts/watch.py` (entry point / orchestration / rendering), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction + scene/keyframe/dedup), `scripts/transcribe.py` (caption parsing + transcript formatting), `scripts/local_whisper.py` (fully local faster-whisper transcription with model cascade), `scripts/ocr.py` (local on-screen text OCR), `scripts/audio.py` (ffmpeg audio intelligence), `scripts/stems.py` (local Demucs vocal/music separation), `scripts/timeline.py` (speech/music/singing timeline), `scripts/scenes.py` (precise PySceneDetect cut/transition detection), `scripts/identify.py` (opt-in music ID via Shazam/ACRCloud — the only non-local script), `scripts/voicecheck.py` (AI-voice verdict + acoustics + warmth), `scripts/voicebatch.py` (batch scan + calibration of the real-vs-AI threshold), `scripts/metrics.py` (cut/pacing metrics), `scripts/config.py` (shared config), `scripts/setup.py` (preflight + installer)
 
 Review scripts before first use to verify behavior.

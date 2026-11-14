@@ -653,8 +653,8 @@ def print_markdown_report(r: dict, header_level: int = 1) -> None:
         print()
         print("## Voice check")
         print()
-        print(f"_Measured on the {r['voicecheck'].get('source', 'audio')}. "
-              "These are acoustic signals, not a human judgment of how the voice feels._")
+        print(f"_Measured on the {r['voicecheck'].get('source', 'audio')} "
+              "(wav2vec2 AI detector + Praat acoustics + spectral warmth)._")
         print()
         print(voicecheck_mod.format_voicecheck_report(r["voicecheck"]))
 

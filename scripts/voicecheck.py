@@ -31,6 +31,51 @@ _CENTROID_RE = re.compile(r"aspectralstats\.\d+\.centroid=([0-9.]+)")
 _ROLLOFF_RE = re.compile(r"aspectralstats\.\d+\.rolloff=([0-9.]+)")
 _FLATNESS_RE = re.compile(r"aspectralstats\.\d+\.flatness=([0-9.]+)")
 
+# Calibration: once you score a set of your KNOWN-REAL voices, voicebatch.py
+# writes the real-voice score range + a decision threshold here, and every voice
+# check after that returns a confident REAL/AI verdict instead of a raw number.
+CALIBRATION_FILE = Path.home() / ".config" / "watch" / "voice_calibration.json"
+DEFAULT_THRESHOLD = 0.5
+
+
+def load_calibration() -> dict | None:
+    try:
+        if CALIBRATION_FILE.exists():
+            return json.loads(CALIBRATION_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return None
+
+
+def _verdict(ai_prob: float | None, calibration: dict | None) -> dict:
+    """Turn an AI probability into a straight REAL / AI verdict + confidence.
+
+    With calibration (learned from the user's own real voices) the threshold is
+    tuned, so the call is reliable for THEIR videos. Without it, a sensible
+    default threshold is used and the verdict is marked uncalibrated.
+    """
+    if ai_prob is None:
+        return {"verdict": "UNKNOWN", "confidence_pct": None, "calibrated": False,
+                "threshold": None}
+    cal = calibration or {}
+    threshold = float(cal.get("threshold", DEFAULT_THRESHOLD))
+    calibrated = bool(cal.get("threshold") is not None)
+    is_ai = ai_prob >= threshold
+    # Confidence = how far the score sits from the threshold, scaled to the side's
+    # available range, so a score right at the line reads ~50%.
+    if is_ai:
+        span = max(1e-6, 1.0 - threshold)
+        conf = 50 + 50 * min(1.0, (ai_prob - threshold) / span)
+    else:
+        span = max(1e-6, threshold)
+        conf = 50 + 50 * min(1.0, (threshold - ai_prob) / span)
+    return {
+        "verdict": "AI" if is_ai else "HUMAN",
+        "confidence_pct": round(conf, 1),
+        "calibrated": calibrated,
+        "threshold": round(threshold, 3),
+    }
+
 
 def _mean(xs: list[float]) -> float | None:
     xs = [x for x in xs if x is not None]
@@ -164,30 +209,43 @@ def ai_voice_score(audio_path: str, model: str = _AI_MODEL) -> dict:
     return result
 
 
-def voice_check(audio_path: str, run_ai: bool = True) -> dict:
-    """Full voice check: warmth + acoustics + (optional) AI-likelihood."""
+def voice_check(audio_path: str, run_ai: bool = True, calibration: dict | None = None) -> dict:
+    """Full voice check: a REAL/AI verdict + warmth + acoustics + AI probability."""
+    if calibration is None:
+        calibration = load_calibration()
+    ai = ai_voice_score(audio_path) if run_ai else {"available": False, "skipped": True}
+    verdict = _verdict(ai.get("ai_probability"), calibration) if ai.get("available") else {
+        "verdict": "UNKNOWN", "confidence_pct": None, "calibrated": False, "threshold": None}
     return {
+        "verdict": verdict,
         "warmth": warmth_metrics(audio_path),
         "acoustics": voice_acoustics(audio_path),
-        "ai": ai_voice_score(audio_path) if run_ai else {"available": False, "skipped": True},
+        "ai": ai,
     }
 
 
 def format_voicecheck_report(vc: dict) -> str:
     lines: list[str] = []
+    v = vc.get("verdict") or {}
     ai = vc.get("ai") or {}
+
+    # Lead with a straight verdict — the data IS the answer.
+    if v.get("verdict") in ("AI", "HUMAN"):
+        cal = "calibrated to your voices" if v.get("calibrated") else "default threshold — calibrate for best accuracy"
+        conf = v.get("confidence_pct")
+        conf_txt = f" · {conf:.0f}% confidence" if conf is not None else ""
+        verdict_word = "AI-GENERATED VOICE" if v["verdict"] == "AI" else "REAL / HUMAN VOICE"
+        lines.append(f"- **Verdict: {verdict_word}**{conf_txt}  _({cal})_")
     if ai.get("available"):
-        lines.append(f"- **AI-voice likelihood:** {ai['ai_probability']:.0%} — {ai['label']} "
-                     f"_(detector: {ai.get('model','').split('/')[-1]})_")
-    elif ai.get("skipped"):
-        pass
-    else:
-        lines.append("- **AI-voice likelihood:** detector not installed "
-                     "(`pip install transformers torchaudio soundfile`).")
+        lines.append(f"- **AI score:** {ai['ai_probability']:.2f} "
+                     f"(0 = human, 1 = AI; threshold {v.get('threshold', 0.5)})")
+    elif not ai.get("skipped"):
+        lines.append("- **AI score:** detector not installed (`pip install transformers`).")
+
     w = vc.get("warmth") or {}
     if w.get("available"):
         lines.append(f"- **Warmth / tone:** {w['warmth_label']} "
-                     f"(spectral centroid {w['centroid_hz']} Hz, flatness {w['flatness']})")
+                     f"(centroid {w['centroid_hz']} Hz, flatness {w['flatness']})")
     a = vc.get("acoustics") or {}
     if a.get("available"):
         bits = []
@@ -201,10 +259,6 @@ def format_voicecheck_report(vc: dict) -> str:
             bits.append(f"shimmer {a['shimmer_pct']}%")
         smooth = f" — {a['smoothness_label']}" if a.get("smoothness_label") else ""
         lines.append(f"- **Voice acoustics:** {', '.join(bits)}{smooth}")
-    elif not a.get("available"):
-        lines.append("- **Voice acoustics:** Praat not installed (`pip install praat-parselmouth`).")
-    lines.append("- _Note: these are acoustic measurements, not a human judgment of how the voice "
-                 "feels; use them to flag clips worth a listen._")
     return "\n".join(lines) if lines else "_Voice check produced no metrics._"
 
 
